@@ -1,0 +1,101 @@
+# WEEX 网格交易配置示例
+# 
+# 说明：
+# - WEEX 交易所由于私有 API 限制，使用油猴脚本执行交易
+# - 网格计算和策略由 Python 后端完成
+# - 实际交易执行通过浏览器中的油猴脚本进行
+#
+# 使用步骤：
+# 1. 在浏览器中安装 Tampermonkey 扩展
+# 2. 创建油猴脚本（使用 weex_trading_controlled_tampermonkey.js）
+# 3. 运行此配置：python run_grid_trading.py -c config/grid/weex_grid_example.yaml
+# 4. 按照提示在浏览器中启动网格交易
+
+grid_system:
+  # 交易所配置
+  exchange: weex                          # 交易所名称
+  symbol: BTC/USDT                        # 交易对（将自动转换为 cmt_btcusdt）
+  
+  # 网格类型选择（选择一种）
+  # 1. 普通网格 - 固定价格区间
+  grid_type: long                         # 做多网格 (long/short)
+  
+  # 2. 马丁网格 - 递增下单
+  # grid_type: martingale_long            # 马丁做多网格
+  # martingale_increment: 100             # 马丁递增金额（USDT）
+  
+  # 3. 价格移动网格 - 动态跟踪价格
+  # grid_type: follow_long                # 价格移动做多网格
+  # follow_grid_count: 10                 # 网格数量
+  # follow_timeout: 300                   # 脱离超时（秒）
+  # follow_distance: 1                    # 脱离距离（网格数）
+  
+  # 网格参数
+  grid_interval: 500                      # 网格间隔（USDT）
+  order_amount: 0.01                      # 每格订单数量（BTC）
+  
+  # 价格区间（仅普通网格和马丁网格需要）
+  price_range:
+    lower_price: 85000                    # 价格下限（USDT）
+    upper_price: 95000                    # 价格上限（USDT）
+  
+  # 交易精度参数
+  quantity_precision: 8                   # 数量精度（BTC 是 8 位小数）
+  price_decimals: 2                       # 价格精度（USDT 是 2 位小数）
+  
+  # 可选功能
+  max_position: 1.0                       # 最大持仓限制（BTC）
+  enable_notifications: true              # 启用通知
+  
+  # 剥头皮模式（可选）
+  scalping_enabled: false                 # 启用剥头皮
+  scalping_trigger_percent: 80            # 触发剥头皮的网格进度百分比
+  scalping_take_profit_grids: 2           # 止盈使用的网格数量
+  
+  # 智能剥头皮模式（可选）
+  smart_scalping_enabled: false           # 启用智能剥头皮
+  allowed_deep_drops: 1                   # 允许的深度下跌次数
+  min_drop_threshold_percent: 10          # 最小下跌百分比阈值
+  
+  # 本金保护模式（可选）
+  capital_protection_enabled: false       # 启用本金保护
+  capital_protection_trigger_percent: 50  # 触发本金保护的网格进度百分比
+  
+  # 止盈模式（可选）
+  take_profit_enabled: false              # 启用止盈
+  take_profit_percentage: 0.01            # 止盈百分比（1%）
+  
+  # 价格锁定模式（可选）
+  price_lock_enabled: false               # 启用价格锁定
+  price_lock_threshold: 90000             # 价格锁定阈值（USDT）
+  
+  # 止损保护模式（可选）
+  stop_loss_protection_enabled: false     # 启用止损保护
+  stop_loss_trigger_percent: 100.0        # 触发百分比（%）
+  stop_loss_escape_timeout: 300           # 脱离超时（秒）
+  stop_loss_apr_threshold: 50.0           # APR 阈值（%）
+
+# 日志配置
+logging:
+  level: INFO                             # 日志级别
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: logs/weex_grid.log                # 日志文件
+
+# WEEX 特定配置
+weex_config:
+  # 油猴脚本配置
+  tampermonkey_enabled: true              # 启用油猴脚本
+  websocket_server_url: "ws://localhost:8765"  # WebSocket 服务器地址
+  
+  # API 配置
+  api_key: "${WEEX_API_KEY}"              # 从环境变量读取
+  api_secret: "${WEEX_API_SECRET}"        # 从环境变量读取
+  api_passphrase: "${WEEX_API_PASSPHRASE}"  # 从环境变量读取
+  
+  # 交易所参数
+  margin_mode: isolated                   # 保证金模式（isolated/cross）
+  leverage: 10                            # 杠杆倍数（1-20）
+  
+  # 网络参数
+  request_timeout: 10                     # 请求超时（秒）
+  enable_websocket: true                  # 启用 WebSocket
