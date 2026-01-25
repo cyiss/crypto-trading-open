@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
-WEEX Bot 控制器 - 控制浏览器中的油猴脚本进行网格交易
+WEEX Bot Controller - 通过浏览器工具与油猴脚本交互
 
-这个脚本通过 WebSocket 或 HTTP 与浏览器中的油猴脚本通信，
-实现远程控制网格交易。
+本脚本定义了一个控制器类 `WeexBotBrowserController`，用于通过执行 JavaScript
+与已注入到 WEEX 页面的油猴脚本 (`weex_grid_tampermonkey.js`) 进行通信。
+
+它替代了原有的 WebSocket/HTTP 方案，提供了一个更直接、更稳定的控制方式。
+
+核心功能:
+- 启动和停止网格交易
+- 查询账户信息
+- 获取和取消订单
+- 获取机器人状态
 """
 
-import asyncio
 import json
 import logging
-import uuid
-from typing import Dict, Any, Optional
-
-import aiohttp
-import websockets
+from typing import Any, Dict, List
 
 # 配置日志
 logging.basicConfig(
@@ -23,310 +26,155 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class WEEXBotController:
-    """WEEX Bot 控制器"""
+class WeexBotBrowserController:
+    """通过执行JavaScript与浏览器中的weexBot油猴脚本交互的控制器。"""
 
-    def __init__(
-        self,
-        ws_url: str = "ws://localhost:8765",
-        http_url: str = "http://localhost:8080",
-        use_websocket: bool = True,
-    ):
+    def __init__(self, browser_tool):
         """
-        初始化控制器
+        初始化控制器。
 
         Args:
-            ws_url: WebSocket 服务器地址
-            http_url: HTTP 服务器地址
-            use_websocket: 是否使用 WebSocket（否则使用 HTTP）
+            browser_tool: 用于执行浏览器操作的工具实例 (例如 default_api)。
         """
-        self.ws_url = ws_url
-        self.http_url = http_url
-        self.use_websocket = use_websocket
-        self.ws_connection = None
-        self.pending_responses: Dict[str, asyncio.Future] = {}
-        self.is_connected = False
+        self.browser = browser_tool
+        logger.info("WEEX 浏览器控制器已初始化")
 
-    async def connect(self) -> bool:
-        """连接到油猴脚本"""
-        if self.use_websocket:
-            return await self._connect_websocket()
-        else:
-            return await self._connect_http()
+    async def _execute_js(self, script: str) -> Any:
+        """
+        在浏览器中执行JavaScript并返回结果。
 
-    async def _connect_websocket(self) -> bool:
-        """连接到 WebSocket 服务器"""
+        Args:
+            script: 要执行的JavaScript代码。
+
+        Returns:
+            执行结果，通常是一个字典。
+        """
         try:
-            logger.info(f"连接到 WebSocket: {self.ws_url}")
-            self.ws_connection = await websockets.connect(self.ws_url)
-            self.is_connected = True
-            logger.info("WebSocket 连接成功")
-
-            # 启动消息接收循环
-            asyncio.create_task(self._receive_websocket_messages())
-            return True
+            # 注意：实际调用时，这里会是一个工具调用
+            # result = self.browser.console_exec(brief="Executing bot command", javascript=script)
+            # 为简化本地测试，我们模拟这个调用
+            logger.info(f"准备执行JS: {script}")
+            # 在实际 Manus 环境中，下面这行应替换为真正的工具调用
+            # return f"(Simulated result for: {script})"
+            
+            # 实际工具调用
+            result = await self.browser.console_exec(
+                brief="与WEEX Bot交互",
+                javascript=script
+            )
+            
+            # 假设返回的是一个包含JSON字符串的字典
+            output = result.get("output", "{}")
+            # 清理和解析JSON
+            if output.startswith("<"): # 移除可能的XML/HTML标签
+                output = output.split(">", 1)[-1].rsplit("<", 1)[0]
+            
+            return json.loads(output)
 
         except Exception as e:
-            logger.error(f"WebSocket 连接失败: {e}")
-            self.is_connected = False
-            return False
-
-    async def _connect_http(self) -> bool:
-        """连接到 HTTP 服务器"""
-        try:
-            logger.info(f"连接到 HTTP: {self.http_url}")
-            # HTTP 不需要持久连接，只需验证服务器可访问
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self.http_url}/health") as resp:
-                    if resp.status == 200:
-                        self.is_connected = True
-                        logger.info("HTTP 连接成功")
-                        return True
-                    else:
-                        logger.error(f"HTTP 服务器返回状态码: {resp.status}")
-                        return False
-
-        except Exception as e:
-            logger.error(f"HTTP 连接失败: {e}")
-            self.is_connected = False
-            return False
-
-    async def _receive_websocket_messages(self):
-        """接收 WebSocket 消息"""
-        try:
-            async for message in self.ws_connection:
-                try:
-                    data = json.loads(message)
-                    message_id = data.get('id')
-
-                    if message_id in self.pending_responses:
-                        future = self.pending_responses.pop(message_id)
-                        future.set_result(data)
-                    else:
-                        logger.info(f"收到消息: {data}")
-
-                except json.JSONDecodeError:
-                    logger.error(f"无法解析消息: {message}")
-
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("WebSocket 连接已关闭")
-            self.is_connected = False
-
-        except Exception as e:
-            logger.error(f"接收消息时出错: {e}")
-            self.is_connected = False
-
-    async def _send_websocket_command(
-        self,
-        command: str,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """发送 WebSocket 命令"""
-        if not self.is_connected:
-            raise RuntimeError("未连接到 WebSocket 服务器")
-
-        message_id = str(uuid.uuid4())
-        message = {
-            'id': message_id,
-            'command': command,
-            **kwargs
-        }
-
-        # 创建响应 Future
-        response_future = asyncio.Future()
-        self.pending_responses[message_id] = response_future
-
-        try:
-            # 发送命令
-            await self.ws_connection.send(json.dumps(message))
-            logger.info(f"发送命令: {command}")
-
-            # 等待响应（超时 30 秒）
-            response = await asyncio.wait_for(response_future, timeout=30)
-            logger.info(f"收到响应: {response}")
-            return response
-
-        except asyncio.TimeoutError:
-            logger.error(f"命令超时: {command}")
-            self.pending_responses.pop(message_id, None)
-            raise
-
-        except Exception as e:
-            logger.error(f"发送命令失败: {e}")
-            self.pending_responses.pop(message_id, None)
-            raise
-
-    async def _send_http_command(
-        self,
-        command: str,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """发送 HTTP 命令"""
-        if not self.is_connected:
-            raise RuntimeError("未连接到 HTTP 服务器")
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"{self.http_url}/command/{command}"
-                async with session.post(url, json=kwargs) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        logger.info(f"收到响应: {data}")
-                        return data
-                    else:
-                        error_text = await resp.text()
-                        logger.error(f"HTTP 错误 {resp.status}: {error_text}")
-                        raise RuntimeError(f"HTTP 错误 {resp.status}")
-
-        except Exception as e:
-            logger.error(f"发送命令失败: {e}")
-            raise
-
-    async def send_command(
-        self,
-        command: str,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """发送命令（自动选择 WebSocket 或 HTTP）"""
-        if self.use_websocket:
-            return await self._send_websocket_command(command, **kwargs)
-        else:
-            return await self._send_http_command(command, **kwargs)
-
-    async def start_grid_trading(
-        self,
-        symbol: str = "cmt_btcusdt",
-        grid_levels: int = 5,
-        grid_spacing: float = 1000,
-    ) -> Dict[str, Any]:
-        """启动网格交易"""
-        logger.info(f"启动网格交易: {symbol}, {grid_levels} 档, 间距 {grid_spacing}")
-        return await self.send_command(
-            'start_grid_trading',
-            symbol=symbol,
-            gridLevels=grid_levels,
-            gridSpacing=grid_spacing,
-        )
-
-    async def stop_grid_trading(self) -> Dict[str, Any]:
-        """停止网格交易"""
-        logger.info("停止网格交易")
-        return await self.send_command('stop_grid_trading')
+            logger.error(f"执行JavaScript失败: {e}")
+            logger.error(f"失败的脚本: {script}")
+            return {"error": str(e)}
 
     async def get_account_info(self) -> Dict[str, Any]:
-        """获取账户信息"""
-        logger.info("获取账户信息")
-        return await self.send_command('get_account_info')
+        """获取账户信息。"""
+        logger.info("正在调用: getAccountInfo")
+        script = "window.weexBot.getAccountInfo()"
+        return await self._execute_js(f"JSON.stringify({script})")
 
-    async def get_ticker(self, symbol: str = "cmt_btcusdt") -> Dict[str, Any]:
-        """获取行情"""
-        logger.info(f"获取行情: {symbol}")
-        return await self.send_command('get_ticker', symbol=symbol)
+    async def get_open_orders(self) -> List[Dict[str, Any]]:
+        """获取当前所有委托订单。"""
+        logger.info("正在调用: getOpenOrders")
+        script = "window.weexBot.getOpenOrders()"
+        return await self._execute_js(f"JSON.stringify({script})")
 
-    async def place_order(
-        self,
-        symbol: str,
-        size: str,
-        order_type: str,
-        price: str,
-        order_type_code: str = '0',
-        match_price: str = '0',
-    ) -> Dict[str, Any]:
-        """下单"""
-        logger.info(f"下单: {symbol} {size} {order_type} @ {price}")
-        return await self.send_command(
-            'place_order',
-            symbol=symbol,
-            size=size,
-            type=order_type,
-            price=price,
-            orderType=order_type_code,
-            matchPrice=match_price,
-        )
+    async def cancel_all_orders(self) -> Dict[str, Any]:
+        """一键撤销所有订单。"""
+        logger.info("正在调用: cancelAllOrders")
+        script = "window.weexBot.cancelAllOrders()"
+        return await self._execute_js(f"JSON.stringify({script})")
 
-    async def cancel_order(
-        self,
-        symbol: str,
-        order_id: str,
-    ) -> Dict[str, Any]:
-        """撤单"""
-        logger.info(f"撤单: {symbol} {order_id}")
-        return await self.send_command(
-            'cancel_order',
-            symbol=symbol,
-            orderId=order_id,
-        )
+    async def start_grid_trading(self) -> Dict[str, Any]:
+        """启动网格交易。"""
+        logger.info("正在调用: startGrid")
+        script = "window.weexBot.startGrid()"
+        return await self._execute_js(f"JSON.stringify({script})")
 
-    async def get_status(self) -> Dict[str, Any]:
-        """获取状态"""
-        logger.info("获取状态")
-        return await self.send_command('get_status')
+    async def get_stats(self) -> Dict[str, Any]:
+        """获取机器人运行的统计信息。"""
+        logger.info("正在调用: getStats")
+        script = "window.weexBot.getStats()"
+        return await self._execute_js(f"JSON.stringify({script})")
 
-    async def disconnect(self):
-        """断开连接"""
-        if self.use_websocket and self.ws_connection:
-            await self.ws_connection.close()
-            self.is_connected = False
-            logger.info("WebSocket 已断开")
+    async def reset_state(self) -> None:
+        """重置脚本状态。"""
+        logger.info("正在调用: reset")
+        script = "window.weexBot.reset()"
+        await self._execute_js(script) # 此函数无返回值
+        logger.info("机器人状态已重置")
 
 
-async def main():
-    """主函数 - 演示如何使用控制器"""
+# --- 模拟使用的示例 ---
+# 在实际的 Manus Agent 环境中，你将通过 default_api 来调用浏览器工具
+# 这个 main 函数仅用于演示控制器的结构和用法
+async def main_demo(controller):
+    """演示如何使用控制器。"""
+    logger.info("\n===== 开始演示 WEEX Bot 控制器 =====")
 
-    # 创建控制器（使用 WebSocket）
-    controller = WEEXBotController(
-        ws_url="ws://localhost:8765",
-        use_websocket=True,
-    )
+    # 1. 获取账户信息
+    logger.info("\n--- 步骤 1: 获取账户信息 ---")
+    account_info = await controller.get_account_info()
+    logger.info(f"账户信息: {account_info}")
+    await asyncio.sleep(1)
 
-    try:
-        # 连接到油猴脚本
-        if not await controller.connect():
-            logger.error("连接失败")
-            return
+    # 2. 获取当前委托
+    logger.info("\n--- 步骤 2: 获取当前委托 ---")
+    open_orders = await controller.get_open_orders()
+    logger.info(f"当前有 {len(open_orders)} 个委托订单")
+    if open_orders:
+        logger.info(f"第一个订单: {open_orders[0]}")
+    await asyncio.sleep(1)
 
-        # 等待连接建立
-        await asyncio.sleep(1)
+    # 3. 启动网格交易
+    logger.info("\n--- 步骤 3: 启动网格交易 ---")
+    grid_stats = await controller.start_grid_trading()
+    logger.info(f"网格交易已启动，统计: {grid_stats}")
+    await asyncio.sleep(10) # 等待网格交易执行
 
-        # 获取状态
-        status = await controller.get_status()
-        logger.info(f"当前状态: {status}")
+    # 4. 获取最新统计
+    logger.info("\n--- 步骤 4: 获取最新统计 ---")
+    stats = await controller.get_stats()
+    logger.info(f"最新统计: {stats}")
+    await asyncio.sleep(1)
 
-        # 获取账户信息
-        account = await controller.get_account_info()
-        logger.info(f"账户信息: {account}")
+    # 5. 撤销所有订单
+    logger.info("\n--- 步骤 5: 一键撤销所有订单 ---")
+    cancel_result = await controller.cancel_all_orders()
+    logger.info(f"撤单结果: {cancel_result}")
 
-        # 获取行情
-        ticker = await controller.get_ticker("cmt_btcusdt")
-        logger.info(f"BTC 行情: {ticker}")
-
-        # 启动网格交易
-        logger.info("启动网格交易...")
-        result = await controller.start_grid_trading(
-            symbol="cmt_btcusdt",
-            grid_levels=5,
-            grid_spacing=1000,
-        )
-        logger.info(f"网格交易结果: {result}")
-
-        # 运行 30 秒
-        await asyncio.sleep(30)
-
-        # 停止网格交易
-        logger.info("停止网格交易...")
-        result = await controller.stop_grid_trading()
-        logger.info(f"停止结果: {result}")
-
-        # 获取最终状态
-        status = await controller.get_status()
-        logger.info(f"最终状态: {status}")
-
-    except Exception as e:
-        logger.error(f"错误: {e}")
-
-    finally:
-        await controller.disconnect()
+    logger.info("\n===== 演示结束 =====")
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    # 这是一个模拟运行，无法在本地直接执行，因为它需要一个
+    # 已经注入了油猴脚本并由 Manus Agent 控制的浏览器环境。
+    
+    # 伪造一个 browser_tool 对象用于演示
+    class MockBrowser:
+        async def console_exec(self, brief, javascript):
+            print(f"[MockBrowser] Executing: {javascript}")
+            # 模拟不同的返回值
+            if "getAccountInfo" in javascript:
+                return {"output": json.dumps({"available": "1000 USDT"})}
+            if "getOpenOrders" in javascript:
+                return {"output": json.dumps([{"symbol": "BTC/USDT", "price": "87000"}])}
+            if "startGrid" in javascript:
+                return {"output": json.dumps({"totalPlaced": 10, "status": "completed"})}
+            return {"output": "{}"}
+
+    async def run_mock_test():
+        mock_browser = MockBrowser()
+        controller = WeexBotBrowserController(mock_browser)
+        await main_demo(controller)
+
+    asyncio.run(run_mock_test())
