@@ -1,0 +1,23 @@
+2026-01-25 11:13:35,888 - ExchangeAdapter.weex - INFO - info:102 - 初始化交易所适配器: WEEX
+2026-01-25 11:13:35,888 - ExchangeAdapter.weex - INFO - info:102 - 正在连接到交易所...
+2026-01-25 11:13:43,208 - ExchangeAdapter.weex - INFO - info:102 - 交易所连接成功
+2026-01-25 11:13:43,209 - ExchangeAdapter.weex - INFO - info:102 - 交易所适配器已启动: weex
+2026-01-25 11:13:44,383 - ExchangeAdapter.weex - ERROR - error:116 - 获取行情失败: cmt_btcusdt - TickerData.__init__() got an unexpected keyword argument 'exchange'
+2026-01-25 11:13:44,384 - ExchangeAdapter.weex - INFO - info:102 - 正在断开交易所连接...
+2026-01-25 11:13:44,385 - ExchangeAdapter.weex - INFO - info:102 - 交易所连接已断开
+2026-01-25 11:13:44,385 - ExchangeAdapter.weex - INFO - info:102 - 交易所适配器已停止: weex
+2026-01-25 11:14:11,214 - ExchangeAdapter.weex - INFO - info:102 - 初始化交易所适配器: WEEX
+2026-01-25 11:14:11,214 - ExchangeAdapter.weex - INFO - info:102 - 正在连接到交易所...
+2026-01-25 11:14:20,245 - ExchangeAdapter.weex - INFO - info:102 - 交易所连接成功
+2026-01-25 11:14:20,245 - ExchangeAdapter.weex - INFO - info:102 - 交易所适配器已启动: weex
+2026-01-25 11:14:20,914 - ExchangeAdapter.weex - INFO - info:102 - 正在断开交易所连接...
+2026-01-25 11:14:20,914 - ExchangeAdapter.weex - INFO - info:102 - 交易所连接已断开
+2026-01-25 11:14:20,914 - ExchangeAdapter.weex - INFO - info:102 - 交易所适配器已停止: weex
+2026-01-25 11:15:03,677 - ExchangeAdapter.weex - INFO - info:102 - 初始化交易所适配器: WEEX
+2026-01-25 11:15:03,677 - ExchangeAdapter.weex - INFO - info:102 - 正在连接到交易所...
+2026-01-25 11:15:13,066 - ExchangeAdapter.weex - INFO - info:102 - 交易所连接成功
+2026-01-25 11:15:13,066 - ExchangeAdapter.weex - INFO - info:102 - 交易所适配器已启动: weex
+2026-01-25 11:15:14,633 - ExchangeAdapter.weex - ERROR - error:116 - 获取开放订单失败: 获取订单列表失败: status=521 body=
+2026-01-25 11:15:14,634 - ExchangeAdapter.weex - INFO - info:102 - 正在断开交易所连接...
+2026-01-25 11:15:14,634 - ExchangeAdapter.weex - INFO - info:102 - 交易所连接已断开
+2026-01-25 11:15:14,634 - ExchangeAdapter.weex - INFO - info:102 - 交易所适配器已停止: weex

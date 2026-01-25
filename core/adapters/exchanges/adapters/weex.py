@@ -139,7 +139,7 @@ class WeexAdapter(ExchangeAdapter):
         return ExchangeInfo(
             exchange_id=self.config.exchange_id,
             name=self.config.name,
-            exchange_type=ExchangeType.PERPETUAL_FUTURES,
+            exchange_type=ExchangeType.PERPETUAL,
             markets=self._market_info,
             supported_symbols=self._supported_symbols,
             rate_limits={},
@@ -167,23 +167,42 @@ class WeexAdapter(ExchangeAdapter):
             
             return TickerData(
                 symbol=symbol,
-                exchange=self.config.exchange_id,
                 timestamp=datetime.now(timezone.utc),
-                last=Decimal(str(ticker.get("lastPrice", 0))),
-                bid=Decimal(str(ticker.get("bestBidPrice", 0))),
-                ask=Decimal(str(ticker.get("bestAskPrice", 0))),
-                high=Decimal(str(ticker.get("highPrice", 0))),
-                low=Decimal(str(ticker.get("lowPrice", 0))),
-                volume=Decimal(str(ticker.get("volume", 0))),
-                quote_volume=Decimal(str(ticker.get("quoteAssetVolume", 0))),
+                last=Decimal(str(ticker.get("last", ticker.get("lastPrice", 0)))),
+                bid=Decimal(str(ticker.get("best_bid", ticker.get("bestBidPrice", 0)))),
+                ask=Decimal(str(ticker.get("best_ask", ticker.get("bestAskPrice", 0)))),
+                high=Decimal(str(ticker.get("high_24h", ticker.get("highPrice", 0)))),
+                low=Decimal(str(ticker.get("low_24h", ticker.get("lowPrice", 0)))),
+                volume=Decimal(str(ticker.get("base_volume", ticker.get("volume", 0)))),
+                quote_volume=Decimal(str(ticker.get("volume_24h", ticker.get("quoteAssetVolume", 0)))),
             )
         except Exception as e:
             self.logger.error(f"获取行情失败: {symbol} - {e}")
             raise
 
-    async def get_order_book(self, symbol: str, limit: int = 20) -> OrderBookData:
+    async def get_tickers(self, symbols: Optional[List[str]] = None) -> List[TickerData]:
+        """获取多个交易对行情"""
+        try:
+            if symbols is None:
+                symbols = await self.get_supported_symbols()
+            
+            tickers = []
+            for symbol in symbols:
+                try:
+                    ticker = await self.get_ticker(symbol)
+                    tickers.append(ticker)
+                except Exception as e:
+                    self.logger.warning(f"获取 {symbol} 行情失败: {e}")
+            
+            return tickers
+        except Exception as e:
+            self.logger.error(f"获取行情列表失败: {e}")
+            raise
+
+    async def get_orderbook(self, symbol: str, limit: Optional[int] = None) -> OrderBookData:
         """获取订单簿"""
         normalized_symbol = self._base.normalize_symbol(symbol)
+        limit = limit or 20
         
         try:
             book = await self._rest.get_order_book(normalized_symbol, limit)
@@ -204,7 +223,6 @@ class WeexAdapter(ExchangeAdapter):
             
             return OrderBookData(
                 symbol=symbol,
-                exchange=self.config.exchange_id,
                 timestamp=datetime.now(timezone.utc),
                 bids=bids,
                 asks=asks,
@@ -213,21 +231,44 @@ class WeexAdapter(ExchangeAdapter):
             self.logger.error(f"获取订单簿失败: {symbol} - {e}")
             raise
 
+    async def get_order_book(self, symbol: str, limit: int = 20) -> OrderBookData:
+        """获取订单簿（兼容旧接口）"""
+        return await self.get_orderbook(symbol, limit)
+
     async def get_ohlcv(
         self,
         symbol: str,
         timeframe: str = "1m",
-        limit: int = 100,
-        since: Optional[int] = None
+        since: Optional[datetime] = None,
+        limit: Optional[int] = None
     ) -> List[OHLCVData]:
         """获取 K 线数据"""
         # WEEX 的 K 线接口需要进一步实现
         raise NotImplementedError("WEEX 适配器暂未实现 get_ohlcv")
 
+    async def get_trades(
+        self,
+        symbol: str,
+        since: Optional[datetime] = None,
+        limit: Optional[int] = None
+    ) -> List[TradeData]:
+        """获取最近成交记录"""
+        # WEEX 的成交记录接口需要进一步实现
+        raise NotImplementedError("WEEX 适配器暂未实现 get_trades")
+
     # === 账户数据接口 ===
 
-    async def get_balance(self) -> Dict[str, BalanceData]:
+    async def get_balances(self) -> List[BalanceData]:
         """获取账户余额"""
+        try:
+            balance_dict = await self.get_balance()
+            return list(balance_dict.values())
+        except Exception as e:
+            self.logger.error(f"获取余额失败: {e}")
+            raise
+
+    async def get_balance(self) -> Dict[str, BalanceData]:
+        """获取账户余额（内部方法）"""
         try:
             balance_info = await self._rest.get_balance()
             
@@ -249,8 +290,17 @@ class WeexAdapter(ExchangeAdapter):
             self.logger.error(f"获取余额失败: {e}")
             raise
 
-    async def get_positions(self, symbol: Optional[str] = None) -> Dict[str, PositionData]:
+    async def get_positions(self, symbols: Optional[List[str]] = None) -> List[PositionData]:
         """获取持仓"""
+        try:
+            positions_dict = await self._get_positions_dict()
+            return list(positions_dict.values())
+        except Exception as e:
+            self.logger.error(f"获取持仓失败: {e}")
+            raise
+
+    async def _get_positions_dict(self, symbol: Optional[str] = None) -> Dict[str, PositionData]:
+        """获取持仓（内部方法）"""
         try:
             positions_data = await self._rest.get_positions(symbol)
             
@@ -285,9 +335,9 @@ class WeexAdapter(ExchangeAdapter):
         symbol: str,
         side: OrderSide,
         order_type: OrderType,
-        quantity: Decimal,
+        amount: Decimal,
         price: Optional[Decimal] = None,
-        **kwargs
+        params: Optional[Dict[str, Any]] = None
     ) -> OrderData:
         """创建订单"""
         normalized_symbol = self._base.normalize_symbol(symbol)
@@ -300,9 +350,9 @@ class WeexAdapter(ExchangeAdapter):
                 symbol=normalized_symbol,
                 side=order_side,
                 order_type=order_type_str,
-                quantity=str(quantity),
+                quantity=str(amount),
                 price=str(price) if price else None,
-                **kwargs
+                **(params or {})
             )
             
             return self._to_order_data(result)
@@ -310,7 +360,7 @@ class WeexAdapter(ExchangeAdapter):
             self.logger.error(f"创建订单失败: {symbol} - {e}")
             raise
 
-    async def cancel_order(self, symbol: str, order_id: str) -> OrderData:
+    async def cancel_order(self, order_id: str, symbol: str) -> OrderData:
         """取消订单"""
         normalized_symbol = self._base.normalize_symbol(symbol)
         
@@ -354,7 +404,7 @@ class WeexAdapter(ExchangeAdapter):
             self.logger.error(f"取消所有订单失败: {e}")
             raise
 
-    async def get_order(self, symbol: str, order_id: str) -> OrderData:
+    async def get_order(self, order_id: str, symbol: str) -> OrderData:
         """获取订单信息"""
         normalized_symbol = self._base.normalize_symbol(symbol)
         
@@ -386,8 +436,13 @@ class WeexAdapter(ExchangeAdapter):
             self.logger.error(f"获取开放订单失败: {e}")
             raise
 
-    async def get_closed_orders(self, symbol: Optional[str] = None) -> List[OrderData]:
-        """获取已关闭订单"""
+    async def get_order_history(
+        self,
+        symbol: Optional[str] = None,
+        since: Optional[datetime] = None,
+        limit: Optional[int] = None
+    ) -> List[OrderData]:
+        """获取历史订单"""
         try:
             if symbol:
                 normalized_symbol = self._base.normalize_symbol(symbol)
@@ -404,15 +459,27 @@ class WeexAdapter(ExchangeAdapter):
             
             return [self._to_order_data(order) for order in orders]
         except Exception as e:
-            self.logger.error(f"获取已关闭订单失败: {e}")
+            self.logger.error(f"获取历史订单失败: {e}")
             raise
+
+    # === 交易设置接口 ===
+
+    async def set_leverage(self, symbol: str, leverage: int) -> Dict[str, Any]:
+        """设置杠杆倍数"""
+        # WEEX 的杠杆设置接口需要进一步实现
+        raise NotImplementedError("WEEX 适配器暂未实现 set_leverage")
+
+    async def set_margin_mode(self, symbol: str, margin_mode: str) -> Dict[str, Any]:
+        """设置保证金模式"""
+        # WEEX 的保证金模式设置接口需要进一步实现
+        raise NotImplementedError("WEEX 适配器暂未实现 set_margin_mode")
 
     # === WebSocket 订阅接口 ===
 
-    async def subscribe_ticker(self, symbol: str, callback: Callable) -> bool:
+    async def subscribe_ticker(self, symbol: str, callback: Callable[[TickerData], None]) -> None:
         """订阅行情"""
         if not self._websocket:
-            return False
+            raise RuntimeError("WebSocket 未启用")
         
         normalized_symbol = self._base.normalize_symbol(symbol)
         channel = f"ticker:{normalized_symbol}"
@@ -425,15 +492,15 @@ class WeexAdapter(ExchangeAdapter):
             except Exception as e:
                 self.logger.error(f"处理行情数据失败: {e}")
         
-        return await self._websocket.subscribe(channel, wrapper)
+        await self._websocket.subscribe(channel, wrapper)
 
-    async def subscribe_order_book(self, symbol: str, callback: Callable, limit: int = 20) -> bool:
+    async def subscribe_orderbook(self, symbol: str, callback: Callable[[OrderBookData], None]) -> None:
         """订阅订单簿"""
         if not self._websocket:
-            return False
+            raise RuntimeError("WebSocket 未启用")
         
         normalized_symbol = self._base.normalize_symbol(symbol)
-        channel = f"depth:{normalized_symbol}:{limit}"
+        channel = f"depth:{normalized_symbol}:20"
         
         def wrapper(data: Dict[str, Any]) -> None:
             try:
@@ -443,12 +510,30 @@ class WeexAdapter(ExchangeAdapter):
             except Exception as e:
                 self.logger.error(f"处理订单簿数据失败: {e}")
         
-        return await self._websocket.subscribe(channel, wrapper)
+        await self._websocket.subscribe(channel, wrapper)
 
-    async def subscribe_user_data(self, callback: Callable) -> bool:
+    async def subscribe_trades(self, symbol: str, callback: Callable[[TradeData], None]) -> None:
+        """订阅成交数据"""
+        if not self._websocket:
+            raise RuntimeError("WebSocket 未启用")
+        
+        normalized_symbol = self._base.normalize_symbol(symbol)
+        channel = f"trades:{normalized_symbol}"
+        
+        def wrapper(data: Dict[str, Any]) -> None:
+            try:
+                trade = self._parse_trade_data(data)
+                if trade:
+                    callback(trade)
+            except Exception as e:
+                self.logger.error(f"处理成交数据失败: {e}")
+        
+        await self._websocket.subscribe(channel, wrapper)
+
+    async def subscribe_user_data(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         """订阅用户数据（订单、持仓、余额）"""
         if not self._websocket:
-            return False
+            raise RuntimeError("WebSocket 未启用")
         
         # 订阅私有频道
         await self._websocket.connect_private()
@@ -459,8 +544,17 @@ class WeexAdapter(ExchangeAdapter):
         await self._websocket.subscribe_private("position", callback)
         # 订阅余额更新
         await self._websocket.subscribe_private("balance", callback)
+
+    async def unsubscribe(self, symbol: Optional[str] = None) -> None:
+        """取消订阅"""
+        if not self._websocket:
+            return
         
-        return True
+        if symbol:
+            normalized_symbol = self._base.normalize_symbol(symbol)
+            await self._websocket.unsubscribe(f"ticker:{normalized_symbol}")
+            await self._websocket.unsubscribe(f"depth:{normalized_symbol}:20")
+            await self._websocket.unsubscribe(f"trades:{normalized_symbol}")
 
     # === 内部辅助方法 ===
 
@@ -508,7 +602,7 @@ class WeexAdapter(ExchangeAdapter):
             exchange=self.config.exchange_id,
             side=side_map.get(order.get("side", ""), OrderSide.BUY),
             order_type=order_type_map.get(order.get("type", ""), OrderType.LIMIT),
-            quantity=Decimal(str(order.get("quantity", 0))),
+            amount=Decimal(str(order.get("quantity", 0))),
             price=Decimal(str(order.get("price", 0))) if order.get("price") else None,
             filled=Decimal(str(order.get("filled", 0))),
             status=status_map.get(order.get("status", ""), OrderStatus.OPEN),
@@ -522,14 +616,13 @@ class WeexAdapter(ExchangeAdapter):
         try:
             return TickerData(
                 symbol=data.get("symbol", ""),
-                exchange=self.config.exchange_id,
                 timestamp=datetime.now(timezone.utc),
-                last=Decimal(str(data.get("lastPrice", 0))),
-                bid=Decimal(str(data.get("bestBidPrice", 0))),
-                ask=Decimal(str(data.get("bestAskPrice", 0))),
-                high=Decimal(str(data.get("highPrice", 0))),
-                low=Decimal(str(data.get("lowPrice", 0))),
-                volume=Decimal(str(data.get("volume", 0))),
+                last=Decimal(str(data.get("last", data.get("lastPrice", 0)))),
+                bid=Decimal(str(data.get("best_bid", data.get("bestBidPrice", 0)))),
+                ask=Decimal(str(data.get("best_ask", data.get("bestAskPrice", 0)))),
+                high=Decimal(str(data.get("high_24h", data.get("highPrice", 0)))),
+                low=Decimal(str(data.get("low_24h", data.get("lowPrice", 0)))),
+                volume=Decimal(str(data.get("base_volume", data.get("volume", 0)))),
             )
         except Exception as e:
             self.logger.error(f"解析行情数据失败: {e}")
@@ -554,11 +647,26 @@ class WeexAdapter(ExchangeAdapter):
             
             return OrderBookData(
                 symbol=data.get("symbol", ""),
-                exchange=self.config.exchange_id,
                 timestamp=datetime.now(timezone.utc),
                 bids=bids,
                 asks=asks,
             )
         except Exception as e:
             self.logger.error(f"解析订单簿数据失败: {e}")
+            return None
+
+    def _parse_trade_data(self, data: Dict[str, Any]) -> Optional[TradeData]:
+        """解析成交数据"""
+        try:
+            return TradeData(
+                trade_id=str(data.get("tradeId", "")),
+                symbol=data.get("symbol", ""),
+                exchange=self.config.exchange_id,
+                side=OrderSide.BUY if data.get("side") == "buy" else OrderSide.SELL,
+                price=Decimal(str(data.get("price", 0))),
+                amount=Decimal(str(data.get("quantity", 0))),
+                timestamp=unix_ms_to_datetime(data.get("time")),
+            )
+        except Exception as e:
+            self.logger.error(f"解析成交数据失败: {e}")
             return None
