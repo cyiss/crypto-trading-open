@@ -528,19 +528,36 @@ class WeexTampermonkeyRest:
             orders = []
             
             for order_data in orders_data:
-                orders.append(OrderData(
-                    order_id=order_data.get('id', ''),
-                    client_order_id=order_data.get('id', ''),
-                    symbol=symbol or self._base.get_current_symbol(),
-                    side=OrderSide.BUY if order_data.get('side') == 'buy' else OrderSide.SELL,
-                    order_type=OrderType.LIMIT if order_data.get('type') == 'limit' else OrderType.MARKET,
-                    price=Decimal(str(order_data.get('price', 0))),
-                    amount=Decimal(str(order_data.get('quantity', 0))),
-                    filled=Decimal("0"),
-                    remaining=Decimal(str(order_data.get('quantity', 0))),
-                    status=OrderStatus.OPEN,
-                    timestamp=datetime.now()
-                ))
+                try:
+                    # 安全解析价格和数量
+                    import re
+                    price_str = str(order_data.get('price', '0'))
+                    price_str = re.sub(r'[^\d.\-]', '', price_str) or '0'
+                    quantity_str = str(order_data.get('quantity', '0'))
+                    quantity_str = re.sub(r'[^\d.\-]', '', quantity_str) or '0'
+                    
+                    orders.append(OrderData(
+                        id=order_data.get('id', ''),
+                        client_id=order_data.get('id', ''),
+                        symbol=symbol or self._base.get_current_symbol(),
+                        side=OrderSide.BUY if order_data.get('side') == 'buy' else OrderSide.SELL,
+                        type=OrderType.LIMIT if order_data.get('type') == 'limit' else OrderType.MARKET,
+                        price=Decimal(price_str),
+                        amount=Decimal(quantity_str),
+                        filled=Decimal("0"),
+                        remaining=Decimal(quantity_str),
+                        cost=Decimal("0"),
+                        average=None,
+                        status=OrderStatus.OPEN,
+                        timestamp=datetime.now(),
+                        updated=None,
+                        fee=None,
+                        trades=[],
+                        params={},
+                        raw_data=order_data
+                    ))
+                except Exception as e:
+                    self.logger.warning(f"解析订单失败: {order_data}, 错误: {e}")
             
             return orders
         
