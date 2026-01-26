@@ -111,14 +111,24 @@ def create_grid_config(config_data: dict) -> GridConfig:
         'price_decimals': 1,
     }
     
-    # 止盈止损配置
+    # 止盈配置
     take_profit = risk.get('take_profit', {})
     if take_profit.get('enabled', False):
-        params['take_profit_percentage'] = take_profit.get('percentage', 0.05)
+        params['take_profit_enabled'] = True
+        params['take_profit_percentage'] = Decimal(str(take_profit.get('percentage', 0.05)))
     
+    # 止损配置
     stop_loss = risk.get('stop_loss', {})
     if stop_loss.get('enabled', False):
-        params['stop_loss_percentage'] = stop_loss.get('percentage', 0.10)
+        params['stop_loss_protection_enabled'] = True
+        # 止损触发百分比（从网格顶部往不利方向移动的百分比）
+        params['stop_loss_trigger_percent'] = Decimal(str(stop_loss.get('percentage', 0.10) * 100))
+    
+    # 本金保护配置
+    capital_protection = risk.get('capital_protection', {})
+    if capital_protection.get('enabled', False):
+        params['capital_protection_enabled'] = True
+        params['capital_protection_trigger_percent'] = int(capital_protection.get('threshold', 0.20) * 100)
     
     return GridConfig(**params)
 
