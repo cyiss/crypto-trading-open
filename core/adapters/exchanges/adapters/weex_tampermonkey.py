@@ -218,7 +218,8 @@ class WeexTampermonkeyAdapter(ExchangeAdapter):
         order_type: OrderType,
         amount: Decimal,
         price: Optional[Decimal] = None,
-        params: Optional[Dict[str, Any]] = None
+        params: Optional[Dict[str, Any]] = None,
+        batch_mode: bool = False  # 批量模式标志（WEEX不使用，保持接口兼容）
     ) -> OrderData:
         """创建订单"""
         order = await self._rest.create_order(symbol, side, order_type, amount, price, params)

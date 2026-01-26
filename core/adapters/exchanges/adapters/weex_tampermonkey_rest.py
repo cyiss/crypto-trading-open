@@ -140,14 +140,14 @@ class WeexTampermonkeyRest:
             return TickerData(
                 symbol=symbol,
                 timestamp=datetime.now(),
-                last_price=price,
-                bid_price=price,  # 简化处理
-                ask_price=price,  # 简化处理
-                high_24h=Decimal("0"),
-                low_24h=Decimal("0"),
-                volume_24h=Decimal("0"),
-                change_24h=Decimal("0"),
-                change_percent_24h=Decimal("0")
+                last=price,
+                bid=price,  # 简化处理
+                ask=price,  # 简化处理
+                high=Decimal("0"),
+                low=Decimal("0"),
+                volume=Decimal("0"),
+                change=Decimal("0"),
+                percentage=Decimal("0")
             )
         
         raise Exception(f"获取{symbol}行情失败")
@@ -298,8 +298,11 @@ class WeexTampermonkeyRest:
                 balances.append(BalanceData(
                     currency="USDT",
                     free=Decimal(available) if available else Decimal("0"),
-                    locked=Decimal("0"),
-                    total=Decimal(available) if available else Decimal("0")
+                    used=Decimal("0"),
+                    total=Decimal(available) if available else Decimal("0"),
+                    usd_value=Decimal(available) if available else Decimal("0"),
+                    timestamp=datetime.now(),
+                    raw_data={"available": available}
                 ))
             
             return balances
