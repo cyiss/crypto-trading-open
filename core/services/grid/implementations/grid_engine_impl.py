@@ -213,7 +213,7 @@ class GridEngineImpl(IGridEngine):
         # 包括：反手单、止盈订单、健康检查补单等
         exchange_id = str(self.config.exchange).lower(
         ) if self.config.exchange else ''
-        if exchange_id == 'lighter':
+        if exchange_id in ['lighter', 'weex']:
             async with self._lighter_order_lock:
                 return await self._place_order_internal(order, batch_mode, source)
         else:
@@ -403,12 +403,12 @@ class GridEngineImpl(IGridEngine):
                 f"({len(batch)}个订单)"
             )
 
-            # 🔥 Lighter交易所特殊处理：串行下单（避免nonce冲突）
+            # 🔥 Lighter/WEEX交易所特殊处理：串行下单（避免nonce冲突/触发风控）
             # 其他交易所：并发下单（保持原有性能）
             exchange_id = str(self.config.exchange).lower(
             ) if self.config.exchange else ''
-            if exchange_id == 'lighter':
-                self.logger.info("🔥 Lighter交易所：使用串行批量下单模式（避免nonce冲突）")
+            if exchange_id in ['lighter', 'weex']:
+                self.logger.info(f"🔥 {exchange_id.upper()}交易所：使用串行批量下单模式（避免触发风控）")
                 results = []
                 for order in batch:
                     try:
@@ -467,7 +467,7 @@ class GridEngineImpl(IGridEngine):
                 # 其他交易所：并发重试
                 exchange_id = str(self.config.exchange).lower(
                 ) if self.config.exchange else ''
-                if exchange_id == 'lighter':
+                if exchange_id in ['lighter', 'weex']:
                     results = []
                     for order in retry_orders:
                         try:
