@@ -294,15 +294,27 @@ class WeexTampermonkeyRest:
             # 可用余额
             available = data.get('availableBalance', '0')
             if available:
-                available = available.replace(',', '').replace('USDT', '').strip()
+                try:
+                    # 清理字符串，只保留数字和小数点
+                    available = str(available).replace(',', '').replace('USDT', '').replace(' ', '').strip()
+                    # 移除所有非数字字符（除了小数点和负号）
+                    import re
+                    available = re.sub(r'[^\d.\-]', '', available)
+                    if not available or available == '' or available == '.':
+                        available = '0'
+                    available_decimal = Decimal(available)
+                except Exception as e:
+                    self.logger.warning(f"解析余额失败: {available}, 错误: {e}")
+                    available_decimal = Decimal("0")
+                
                 balances.append(BalanceData(
                     currency="USDT",
-                    free=Decimal(available) if available else Decimal("0"),
+                    free=available_decimal,
                     used=Decimal("0"),
-                    total=Decimal(available) if available else Decimal("0"),
-                    usd_value=Decimal(available) if available else Decimal("0"),
+                    total=available_decimal,
+                    usd_value=available_decimal,
                     timestamp=datetime.now(),
-                    raw_data={"available": available}
+                    raw_data={"available": str(available)}
                 ))
             
             return balances
@@ -408,17 +420,24 @@ class WeexTampermonkeyRest:
             order_id = str(uuid.uuid4())
             
             return OrderData(
-                order_id=order_id,
-                client_order_id=order_id,
+                id=order_id,
+                client_id=order_id,
                 symbol=symbol,
                 side=side,
-                order_type=order_type,
+                type=order_type,
                 price=price or Decimal("0"),
                 amount=amount,
                 filled=Decimal("0"),
                 remaining=amount,
+                cost=Decimal("0"),
+                average=None,
                 status=OrderStatus.OPEN,
-                timestamp=datetime.now()
+                timestamp=datetime.now(),
+                updated=None,
+                fee=None,
+                trades=[],
+                params={},
+                raw_data={}
             )
         
         error_msg = result.get('result', {}).get('error', '下单失败') if result else '下单失败'
@@ -439,17 +458,24 @@ class WeexTampermonkeyRest:
         
         if result and result.get('result', {}).get('success'):
             return OrderData(
-                order_id=order_id,
-                client_order_id=order_id,
+                id=order_id,
+                client_id=order_id,
                 symbol=symbol,
                 side=OrderSide.BUY,
-                order_type=OrderType.LIMIT,
+                type=OrderType.LIMIT,
                 price=Decimal("0"),
                 amount=Decimal("0"),
                 filled=Decimal("0"),
                 remaining=Decimal("0"),
+                cost=Decimal("0"),
+                average=None,
                 status=OrderStatus.CANCELLED,
-                timestamp=datetime.now()
+                timestamp=datetime.now(),
+                updated=None,
+                fee=None,
+                trades=[],
+                params={},
+                raw_data={}
             )
         
         raise Exception("取消订单失败")
