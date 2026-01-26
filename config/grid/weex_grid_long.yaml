@@ -1,0 +1,69 @@
+# ============================================================================
+# WEEX 做多网格配置
+# ============================================================================
+# 做多网格：在当前价格下方挂买单，买单成交后向上挂卖单
+# 适合震荡行情中低买高卖
+# ============================================================================
+
+# 交易对
+symbol: "BTCUSDT"
+
+# 网格配置
+grid:
+  type: "long"              # 做多网格
+  upper_price: 88500        # 上限价格（略高于当前价格）
+  lower_price: 82000        # 下限价格
+  count: 65                 # 网格数量（价格间距约100 USDT）
+  profit_per_grid: 0.002    # 每格利润率 0.2%
+
+# 订单配置
+order:
+  size: 20                  # 每单数量（张）
+  type: "limit"             # 订单类型
+  post_only: false          # 是否只做maker
+
+# 杠杆配置
+leverage:
+  multiplier: 20            # 杠杆倍数
+  margin_mode: "cross"      # 保证金模式: cross/isolated
+
+# 资金配置
+capital:
+  total_investment: 1000    # 总投资额 (USDT)
+  max_position: 200         # 最大持仓（张）
+  reserve_balance: 100      # 预留余额 (USDT)
+
+# 风控配置
+risk:
+  take_profit:
+    enabled: true
+    percentage: 0.05        # 5% 止盈
+  stop_loss:
+    enabled: true
+    percentage: 0.10        # 10% 止损
+  capital_protection:
+    enabled: true
+    threshold: 0.20         # 20% 本金保护阈值
+
+# 运行时配置
+runtime:
+  price_check_interval: 1   # 价格检查间隔（秒）
+  order_check_interval: 5   # 订单检查间隔（秒）
+  position_check_interval: 10  # 持仓检查间隔（秒）
+  grid_reset_interval: 0    # 网格重置间隔（0=不自动重置）
+
+# 日志配置
+logging:
+  level: "INFO"
+  log_orders: true
+  log_price_changes: false
+
+# 通知配置
+notification:
+  enabled: false
+  type: "telegram"
+  events:
+    - "order_filled"
+    - "take_profit"
+    - "stop_loss"
+    - "error"
