@@ -396,7 +396,7 @@ class WeexTampermonkeyRest:
         # 🔥 下单前随机延迟1-3秒，避免触发风控
         import random
         delay = random.uniform(1, 3)
-        self._logger.debug(f"下单前等待 {delay:.2f} 秒...")
+        self.logger.debug(f"下单前等待 {delay:.2f} 秒...")
         await asyncio.sleep(delay)
         
         # 发送下单命令
