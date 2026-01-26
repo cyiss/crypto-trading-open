@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         WEEX 统一交易机器人 v4.0
 // @namespace    http://tampermonkey.net/
-// @version      4.0.0
+// @version      4.0.1
 // @description  WEEX 永续合约交易自动化脚本，支持市价/限价下单、账户查询、撤单、平仓和K线读取
 // @author       Manus AI
 // @match        https://www.weex.com/*
+// @match        https://*.weex.com/*
 // @grant        unsafeWindow
-// @run-at       document-idle
+// @grant        GM_info
+// @run-at       document-start
 // ==/UserScript==
 
 (function() {
@@ -786,25 +788,139 @@
         config: CONFIG,
         state: state
     };
+
+    // ===================================================================
+    // 13. 暴露API到页面上下文 (关键修复)
+    // ===================================================================
+    
+    // 方法1: 直接赋值给window
+    window.weexBot = weexBotAPI;
+    
+    // 方法2: 使用unsafeWindow (Tampermonkey特有)
+    if (typeof unsafeWindow !== 'undefined') {
+        unsafeWindow.weexBot = weexBotAPI;
+    }
+    
+    // 方法3: 通过script标签注入到页面上下文 (最可靠的方法)
+    function injectToPageContext() {
+        const apiString = JSON.stringify({
+            version: '4.0.1',
+            injected: true
+        });
+        
+        const scriptContent = `
+            (function() {
+                // 创建一个临时对象来保存状态
+                if (window.__weexBotReady) return;
+                window.__weexBotReady = true;
+                
+                // 创建一个代理对象，用于与油猴脚本通信
+                window.__weexBotProxy = {
+                    pendingCalls: [],
+                    call: function(method, args) {
+                        return new Promise((resolve, reject) => {
+                            const callId = Date.now() + '_' + Math.random();
+                            this.pendingCalls.push({ id: callId, resolve, reject });
+                            window.postMessage({ 
+                                type: 'WEEX_BOT_CALL', 
+                                method: method, 
+                                args: args,
+                                callId: callId
+                            }, '*');
+                            // 10秒超时
+                            setTimeout(() => {
+                                const idx = this.pendingCalls.findIndex(c => c.id === callId);
+                                if (idx >= 0) {
+                                    this.pendingCalls.splice(idx, 1);
+                                    reject(new Error('Call timeout'));
+                                }
+                            }, 10000);
+                        });
+                    }
+                };
+                
+                // 监听油猴脚本的响应
+                window.addEventListener('message', function(event) {
+                    if (event.data && event.data.type === 'WEEX_BOT_RESPONSE') {
+                        const idx = window.__weexBotProxy.pendingCalls.findIndex(c => c.id === event.data.callId);
+                        if (idx >= 0) {
+                            const call = window.__weexBotProxy.pendingCalls.splice(idx, 1)[0];
+                            if (event.data.error) {
+                                call.reject(new Error(event.data.error));
+                            } else {
+                                call.resolve(event.data.result);
+                            }
+                        }
+                    }
+                });
+                
+                console.log('[WEEX Bot] 页面上下文代理已初始化');
+            })();
+        `;
+        
+        const script = document.createElement('script');
+        script.textContent = scriptContent;
+        (document.head || document.documentElement).appendChild(script);
+        script.remove();
+    }
+    
+    // 监听页面上下文的调用请求
+    window.addEventListener('message', async function(event) {
+        if (event.data && event.data.type === 'WEEX_BOT_CALL') {
+            const { method, args, callId } = event.data;
+            try {
+                let result;
+                if (weexBotAPI[method] && typeof weexBotAPI[method] === 'function') {
+                    result = await weexBotAPI[method].apply(null, args || []);
+                } else {
+                    throw new Error(`Method ${method} not found`);
+                }
+                window.postMessage({ type: 'WEEX_BOT_RESPONSE', callId, result }, '*');
+            } catch (e) {
+                window.postMessage({ type: 'WEEX_BOT_RESPONSE', callId, error: e.message }, '*');
+            }
+        }
+    });
+    
+    // 注入到页面上下文
+    injectToPageContext();
+
     // 初始化
     resetState();
     state.stats.startTime = new Date().toISOString();
 
-    log('========================================', 'info');
-    log('WEEX 统一交易机器人已加载 (v4.0.0)', 'success');
-    log('使用 window.weexBot 调用功能', 'info');
-    log('========================================', 'info');
-    log('可用命令:', 'info');
-    log('  weexBot.getCurrentPrice()     - 获取当前价格', 'info');
-    log('  weexBot.getKlineData()        - 获取K线数据', 'info');
-    log('  weexBot.getAccountStatus()    - 获取账户状态', 'info');
-    log('  weexBot.placeMarketBuy(20)    - 市价买入20张', 'info');
-    log('  weexBot.placeMarketSell(20)   - 市价卖出20张', 'info');
-    log('  weexBot.placeLimitBuy(87000, 20)  - 限价买入', 'info');
-    log('  weexBot.placeLimitSell(88000, 20) - 限价卖出', 'info');
-    log('  weexBot.cancelAllOrders()     - 一键撤销', 'info');
-    log('  weexBot.closePosition("BTC")  - 平仓', 'info');
-    log('  weexBot.connect()             - 连接后端', 'info');
-    log('========================================', 'info');
+    // 延迟打印日志，确保页面加载完成
+    const printWelcome = () => {
+        log('========================================', 'info');
+        log('WEEX 统一交易机器人已加载 (v4.0.1)', 'success');
+        log('使用 weexBot 调用功能', 'info');
+        log('========================================', 'info');
+        log('可用命令:', 'info');
+        log('  weexBot.getCurrentPrice()     - 获取当前价格', 'info');
+        log('  weexBot.getKlineData()        - 获取K线数据', 'info');
+        log('  weexBot.getAccountStatus()    - 获取账户状态', 'info');
+        log('  weexBot.placeMarketBuy(20)    - 市价买入20张', 'info');
+        log('  weexBot.placeMarketSell(20)   - 市价卖出20张', 'info');
+        log('  weexBot.placeLimitBuy(87000, 20)  - 限价买入', 'info');
+        log('  weexBot.placeLimitSell(88000, 20) - 限价卖出', 'info');
+        log('  weexBot.cancelAllOrders()     - 一键撤销', 'info');
+        log('  weexBot.closePosition("BTC")  - 平仓', 'info');
+        log('  weexBot.connect()             - 连接后端', 'info');
+        log('========================================', 'info');
+        
+        // 验证API是否成功暴露
+        if (typeof window.weexBot !== 'undefined') {
+            log('✅ weexBot API 已成功暴露到全局作用域', 'success');
+        } else {
+            log('⚠️ 如果控制台无法访问weexBot，请尝试刷新页面', 'warn');
+        }
+    };
+    
+    // 根据页面加载状态决定何时打印欢迎信息
+    if (document.readyState === 'complete') {
+        printWelcome();
+    } else {
+        window.addEventListener('load', printWelcome);
+    }
 
 })();
