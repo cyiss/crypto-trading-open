@@ -21,7 +21,7 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from core.logging import get_logger, setup_logging
+from core.logging import get_logger, initialize_logging
 from core.adapters.exchanges import ExchangeFactory, ExchangeConfig, ExchangeType
 from core.services.grid.coordinator.grid_coordinator import GridCoordinator
 
@@ -42,7 +42,7 @@ async def main(config_path: str = None):
     global logger, coordinator, exchange
     
     # 设置日志
-    setup_logging()
+    initialize_logging()
     logger = get_logger(__name__)
     
     logger.info("=" * 60)
