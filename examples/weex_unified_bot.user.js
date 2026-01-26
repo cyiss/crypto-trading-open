@@ -647,43 +647,83 @@
     }
 
     async function handleWsCommand(command) {
-        const { action, ...params } = command;
+        const { id, action, params = {} } = command;
+        log(`处理命令: ${action}, ID: ${id}`, 'info');
         let result;
 
-        switch (action) {
-            case 'get_price':
-                result = await getCurrentPrice();
-                break;
-            case 'get_kline':
-                result = await getKlineData();
-                break;
-            case 'get_account':
-                result = await getAccountStatus();
-                break;
-            case 'get_orders':
-                result = await getOpenOrders();
-                break;
-            case 'place_order':
-                result = await placeOrder(params);
-                break;
-            case 'cancel_order':
-                result = await cancelOrder(params.orderId);
-                break;
-            case 'cancel_all':
-                result = await cancelAllOrders();
-                break;
-            case 'close_position':
-                result = await closePosition(params.symbol, params);
-                break;
-            case 'get_stats':
-                result = getStats();
-                break;
-            default:
-                result = { error: `未知命令: ${action}` };
+        try {
+            switch (action) {
+                case 'get_price':
+                    result = await getCurrentPrice();
+                    break;
+                case 'get_kline':
+                    result = await getKlineData();
+                    break;
+                case 'get_account':
+                    result = await getAccountStatus();
+                    break;
+                case 'get_orders':
+                    result = await getOpenOrders();
+                    break;
+                case 'place_order':
+                    result = await placeOrder(params);
+                    break;
+                case 'cancel_order':
+                    result = await cancelOrder(params.orderId || params.order_id);
+                    break;
+                case 'cancel_all':
+                    result = await cancelAllOrders();
+                    break;
+                case 'close_position':
+                    result = await closePosition(params.symbol, params);
+                    break;
+                case 'get_stats':
+                    result = getStats();
+                    break;
+                case 'switch_symbol':
+                    result = await switchSymbol(params.symbol);
+                    break;
+                default:
+                    result = { success: false, error: `未知命令: ${action}` };
+            }
+        } catch (e) {
+            log(`命令执行失败: ${e.message}`, 'error');
+            result = { success: false, error: e.message };
         }
 
-        // 发送结果回服务器
-        sendWsMessage({ type: 'response', action, result, timestamp: new Date().toISOString() });
+        // 发送结果回服务器（包含请求ID以便后端匹配响应）
+        sendWsMessage({ 
+            type: 'response', 
+            id: id,
+            action, 
+            result, 
+            timestamp: new Date().toISOString() 
+        });
+    }
+
+    // 切换交易对
+    async function switchSymbol(symbol) {
+        log(`切换交易对: ${symbol}`, 'info');
+        try {
+            // WEEX页面上的交易对通常通过URL切换
+            // 例如: /futures/BTC-USDT -> /futures/ETH-USDT
+            const currentUrl = window.location.href;
+            const symbolFormatted = symbol.replace('USDT', '-USDT');
+            
+            if (currentUrl.includes('/futures/')) {
+                const newUrl = currentUrl.replace(/\/futures\/[A-Z]+-USDT/, `/futures/${symbolFormatted}`);
+                if (newUrl !== currentUrl) {
+                    window.location.href = newUrl;
+                    return { success: true, message: `已切换到 ${symbol}` };
+                }
+            }
+            
+            // 如果URL已经是目标交易对，直接返回成功
+            return { success: true, message: `当前已在 ${symbol}` };
+        } catch (e) {
+            log(`切换交易对失败: ${e.message}`, 'error');
+            return { success: false, error: e.message };
+        }
     }
 
     // ===================================================================
@@ -704,8 +744,7 @@
     // ===================================================================
     // 12. 全局 API 暴露
     // ===================================================================
-
-    window.weexBot = {
+    const weexBotAPI = {
         // 市场数据
         getCurrentPrice,
         getKlineData,
@@ -728,8 +767,17 @@
         // 平仓功能
         closePosition,
 
+        // 交易对切换
+        switchSymbol,
+
         // WebSocket通信
         connect: connectWebSocket,
+        disconnect: () => {
+            if (state.wsConnection) {
+                state.wsConnection.close();
+                state.wsConnection = null;
+            }
+        },
         sendMessage: sendWsMessage,
 
         // 系统功能
@@ -738,7 +786,6 @@
         config: CONFIG,
         state: state
     };
-
     // 初始化
     resetState();
     state.stats.startTime = new Date().toISOString();
