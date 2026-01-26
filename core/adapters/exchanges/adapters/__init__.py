@@ -28,7 +28,7 @@ from .edgex import EdgeXAdapter
 from .lighter import LighterAdapter
 from .paradex import ParadexAdapter
 from .variational import VariationalAdapter
-from .weex import WeexAdapter
+from .weex_tampermonkey import WeexTampermonkeyAdapter
 
 __all__ = [
     'HyperliquidAdapter',
@@ -39,5 +39,5 @@ __all__ = [
     'LighterAdapter',
     'ParadexAdapter',
     'VariationalAdapter',
-    'WeexAdapter',
+    'WeexTampermonkeyAdapter',
 ]

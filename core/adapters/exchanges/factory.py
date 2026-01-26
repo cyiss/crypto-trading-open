@@ -59,6 +59,7 @@ class ExchangeFactory:
             from .adapters.paradex import ParadexAdapter
             from .adapters.variational import VariationalAdapter
             from .adapters.grvt import GRVTAdapter
+            from .adapters.weex_tampermonkey import WeexTampermonkeyAdapter
 
             # 注册Hyperliquid适配器
             self.register_adapter(
@@ -257,6 +258,38 @@ class ExchangeFactory:
                         "sub_account_id": "",
                     },
                 },
+            )
+
+            # 注册WEEX油猴适配器
+            self.register_adapter(
+                exchange_id="weex",
+                adapter_class=WeexTampermonkeyAdapter,
+                exchange_type=ExchangeType.PERPETUAL,
+                name="WEEX (Tampermonkey)",
+                description="WEEX永续合约交易所（通过油猴脚本）",
+                supported_features=[
+                    "perpetual_trading", "leverage",
+                    "orderbook", "ticker", "user_data"
+                ],
+                default_config={
+                    "testnet": False,
+                    "default_leverage": 20,
+                    "enable_websocket": False,
+                    "rate_limits": {
+                        "ticker": {"max_requests": 60, "time_window": 60},
+                        "orderbook": {"max_requests": 60, "time_window": 60},
+                        "trading": {"max_requests": 30, "time_window": 60}
+                    },
+                    "extra_params": {
+                        "ws_host": "0.0.0.0",
+                        "ws_port": 8766,
+                        "command_timeout": 10,
+                        "connection_timeout": 300,
+                        "default_symbol": "BTCUSDT",
+                        "poll_interval": 1.0,
+                        "user_data_poll_interval": 5.0
+                    }
+                }
             )
 
             self.logger.info("内置交易所适配器注册完成")
