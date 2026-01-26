@@ -345,12 +345,15 @@ class WeexTampermonkeyAdapter(ExchangeAdapter):
                 # 获取订单
                 orders = await self.get_open_orders()
                 
-                callback({
+                # 调用回调，如果是协程则await
+                result = callback({
                     'type': 'user_data',
                     'balances': [b.__dict__ for b in balances],
                     'positions': [p.__dict__ for p in positions],
                     'orders': [o.__dict__ for o in orders]
                 })
+                if asyncio.iscoroutine(result):
+                    await result
                 
             except Exception as e:
                 self.logger.error(f"轮询用户数据失败: {e}")
