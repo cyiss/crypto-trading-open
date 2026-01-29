@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WEEX 统一交易机器人 v4.0
 // @namespace    http://tampermonkey.net/
-// @version      4.0.1
+// @version      4.0.2
 // @description  WEEX 永续合约交易自动化脚本，支持市价/限价下单、账户查询、撤单、平仓和K线读取
 // @author       Manus AI
 // @match        https://www.weex.com/*
@@ -11,7 +11,7 @@
 // @run-at       document-start
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     // ===================================================================
@@ -195,6 +195,17 @@
         element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     }
 
+    // 专门用于点击 Radix UI 组件（如标签页）
+    function clickRadixElement(element) {
+        if (!element) {
+            throw new Error('元素不存在');
+        }
+        // Radix UI 组件需要 focus + Enter 键盘事件来触发
+        element.focus();
+        element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        element.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+    }
+
     // ===================================================================
     // 5. 市场数据功能 (MARKET DATA)
     // ===================================================================
@@ -276,38 +287,160 @@
         try {
             const account = {
                 equity: null,
-                available: null,
+                availableBalance: null,
                 unrealizedPnl: null,
+                position: null,
                 positions: [],
                 timestamp: new Date().toISOString()
             };
 
-            // 获取账户基本信息
-            const equityEl = getElement(SELECTORS.equityValue);
-            const availableEl = getElement(SELECTORS.availableValue);
-            const pnlEl = getElement(SELECTORS.unrealizedPnl);
-
-            if (equityEl) account.equity = equityEl.textContent.trim();
-            if (availableEl) account.available = availableEl.textContent.trim();
-            if (pnlEl) account.unrealizedPnl = pnlEl.textContent.trim();
-
-            // 获取持仓信息
-            const positionRows = getElements(SELECTORS.positionRow);
-            positionRows.forEach(row => {
-                const cells = row.querySelectorAll('td, div[role="gridcell"], [class*="cell"]');
-                if (cells.length >= 4) {
-                    account.positions.push({
-                        symbol: cells[0]?.textContent?.trim() || '',
-                        side: cells[1]?.textContent?.trim() || '',
-                        quantity: cells[2]?.textContent?.trim() || '',
-                        entryPrice: cells[3]?.textContent?.trim() || '',
-                        pnl: cells[4]?.textContent?.trim() || ''
-                    });
+            // 直接使用 querySelectorAll 遍历页面元素获取数据
+            // 1. 获取可用余额 - 查找包含"可用"文字的元素
+            const allElements = document.querySelectorAll('span, div, p');
+            for (const el of allElements) {
+                const text = el.textContent.trim();
+                
+                // 匹配"可用: 1,234.56" 或 "可用余额: 1234.56" 格式
+                if (text.includes('可用') && !text.includes('不可用')) {
+                    const match = text.match(/可用[：:\s]*([0-9,]+\.?\d*)/);
+                    if (match) {
+                        account.availableBalance = match[1].replace(/,/g, '');
+                        log(`找到可用余额: ${account.availableBalance}`, 'info');
+                        break;
+                    }
                 }
-            });
+            }
+
+            // 2. 获取权益/总余额
+            for (const el of allElements) {
+                const text = el.textContent.trim();
+                if ((text.includes('权益') || text.includes('总余额') || text.includes('账户余额')) 
+                    && !text.includes('可用')) {
+                    const match = text.match(/([0-9,]+\.?\d*)/);
+                    if (match) {
+                        account.equity = match[1].replace(/,/g, '');
+                        log(`找到权益: ${account.equity}`, 'info');
+                        break;
+                    }
+                }
+            }
+
+            // 3. 获取未实现盈亏
+            for (const el of allElements) {
+                const text = el.textContent.trim();
+                if (text.includes('未实现') || text.includes('浮动盈亏')) {
+                    const match = text.match(/(-?[0-9,]+\.?\d*)/);
+                    if (match) {
+                        account.unrealizedPnl = match[1].replace(/,/g, '');
+                        log(`找到未实现盈亏: ${account.unrealizedPnl}`, 'info');
+                        break;
+                    }
+                }
+            }
+
+            // 4. 获取持仓信息 - WEEX 表格解析
+            // WEEX 使用标准 table 结构
+            // 列索引映射：
+            // [0] 合约 - 包含币对名称、方向(多/空)、杠杆倍数
+            // [1] 数量 - 张数（如 "89,490 张"）
+            // [2] 开仓均价
+            // [3] 标记价格
+            // [4] 预估强平价
+            // [5] 保证金比率
+            // [6] 保证金
+            // [7] 未实现盈亏
+            // [8] 已实现盈亏
+            
+            let foundPositions = false;
+            
+            // 清理数字字符串的辅助函数
+            const cleanNumber = (str) => {
+                if (!str) return '0';
+                return str.replace(/[^0-9.\-]/g, '') || '0';
+            };
+            
+            // 查找持仓表格的 tbody
+            const positionTable = document.querySelector('table[data-slot="table"] tbody[data-slot="table-body"]');
+            if (positionTable) {
+                const rows = positionTable.querySelectorAll('tr[data-slot="table-row"]');
+                
+                rows.forEach(row => {
+                    const cells = row.querySelectorAll('td[data-slot="table-cell"]');
+                    if (cells.length >= 9) {
+                        // 解析合约名称和方向
+                        const contractCell = cells[0];
+                        const symbolText = contractCell.querySelector('.text-text-primary')?.textContent?.trim() || '';
+                        const sideElement = contractCell.querySelector('.text-xs.mr-1.px-1');
+                        const sideText = sideElement?.textContent?.trim() || '';
+                        const leverageText = contractCell.querySelector('.text-xs.ml-1.px-1')?.textContent?.trim() || '';
+                        
+                        // 完整合约名称（如 "BTC/USDT多200x"）
+                        const fullSymbol = `${symbolText}${sideText}${leverageText}`;
+                        
+                        // 解析方向
+                        let side = '';
+                        if (sideText.includes('多')) {
+                            side = 'long';
+                        } else if (sideText.includes('空')) {
+                            side = 'short';
+                        }
+                        
+                        // 解析张数
+                        const sizeText = cells[1]?.textContent?.trim() || '';
+                        const sizeMatch = sizeText.match(/([0-9,]+)\s*张/);
+                        const contracts = sizeMatch ? parseFloat(sizeMatch[1].replace(/,/g, '')) : 0;
+                        
+                        // 解析开仓均价
+                        const entryPriceText = cells[2]?.textContent?.trim() || '';
+                        const entryPrice = parseFloat(cleanNumber(entryPriceText)) || 0;
+                        
+                        // 解析未实现盈亏（从第8列提取，格式如 "-1,837.2297 USDT"）
+                        const unrealizedPnlCell = cells[7];
+                        const unrealizedPnlText = unrealizedPnlCell?.querySelector('p[dir="ltr"]')?.textContent?.trim() || '';
+                        const unrealizedPnl = cleanNumber(unrealizedPnlText);
+                        
+                        // 计算 BTC 数量：张数 * 合约面值
+                        // WEEX BTC 合约面值是 0.0001 BTC/张
+                        const contractMultiplier = 0.0001;
+                        const quantityInBTC = contracts * contractMultiplier;
+                        
+                        const position = {
+                            symbol: fullSymbol,
+                            side: side,
+                            contracts: contracts,
+                            quantity: quantityInBTC.toFixed(6),
+                            size: quantityInBTC.toFixed(6),
+                            entryPrice: entryPrice.toString(),
+                            pnl: unrealizedPnl,
+                            unrealizedPnl: unrealizedPnl
+                        };
+                        
+                        // 验证是否是有效的持仓数据
+                        if (position.symbol && contracts > 0 && side) {
+                            account.positions.push(position);
+                            if (!account.position) {
+                                account.position = position;
+                            }
+                            foundPositions = true;
+                            log(`解析到持仓: ${position.symbol} 方向=${side} 张数=${contracts} BTC=${position.size} 均价=${entryPrice} 盈亏=${unrealizedPnl}`, 'info');
+                        }
+                    }
+                });
+            }
+
+            // 5. 如果没找到余额，尝试原始选择器
+            if (!account.availableBalance) {
+                const availableEl = document.querySelector('[class*="available"], [class*="free"]');
+                if (availableEl) {
+                    const match = availableEl.textContent.match(/([0-9,]+\.?\d*)/);
+                    if (match) {
+                        account.availableBalance = match[1].replace(/,/g, '');
+                    }
+                }
+            }
 
             state.positions = account.positions;
-            log(`账户状态获取成功: 可用余额 ${account.available}`, 'success');
+            log(`账户状态获取成功: 可用余额 ${account.availableBalance || '未知'}, 持仓数 ${account.positions.length}`, 'success');
             return { success: true, data: account };
         } catch (e) {
             log(`获取账户状态失败: ${e.message}`, 'error');
@@ -353,27 +486,116 @@
     async function cancelAllOrders() {
         log('准备一键撤销所有订单...', 'warn');
         try {
-            // 查找一键撤销按钮
-            const buttons = document.querySelectorAll('button, [role="button"]');
-            let cancelButton = null;
-
-            for (const btn of buttons) {
-                if (btn.textContent.includes('一键撤销') || btn.textContent.includes('全部撤销')) {
-                    cancelButton = btn;
-                    break;
+            // 1. 先切换到"当前委托"标签 - 使用 data-test-id
+            let entrustTab = document.querySelector('[data-test-id="ContractPosition-trade-tab-entrust-current"]');
+            
+            if (entrustTab) {
+                log('找到"当前委托"标签，正在切换...', 'info');
+                // 使用 Radix UI 专用点击方法（focus + Enter）
+                clickRadixElement(entrustTab);
+                await sleep(1500);  // 增加等待时间让订单列表加载
+                
+                // 验证切换是否成功
+                const isActive = entrustTab.getAttribute('data-state') === 'active';
+                log(`标签切换${isActive ? '成功' : '失败'}, data-state=${entrustTab.getAttribute('data-state')}`, isActive ? 'success' : 'warn');
+            } else {
+                // 备用方案：通过文本查找
+                const tabs = document.querySelectorAll('button[role="tab"]');
+                for (const tab of tabs) {
+                    if (tab.textContent.includes('当前委托')) {
+                        log('通过文本找到"当前委托"标签', 'info');
+                        clickRadixElement(tab);
+                        await sleep(1500);
+                        break;
+                    }
                 }
             }
 
-            if (cancelButton) {
-                clickElement(cancelButton);
-                await sleep(500);
-
-                // 查找确认按钮
-                const confirmButtons = document.querySelectorAll('button, [role="button"]');
-                for (const btn of confirmButtons) {
-                    if (btn.textContent.includes('确定') || btn.textContent.includes('确认')) {
-                        clickElement(btn);
+            // 2. 等待订单列表加载并检查撤销按钮状态（最多等待5秒）
+            let cancelButton = null;
+            let buttonEnabled = false;
+            
+            for (let attempt = 0; attempt < 10; attempt++) {
+                cancelButton = document.querySelector('[data-test-id="ContractPosition-all-cancel"]');
+                
+                if (cancelButton) {
+                    buttonEnabled = !cancelButton.disabled && !cancelButton.hasAttribute('disabled');
+                    log(`第${attempt+1}次检查: 按钮存在=${!!cancelButton}, 已启用=${buttonEnabled}`, 'info');
+                    
+                    if (buttonEnabled) {
+                        log('撤销按钮已启用，准备点击', 'success');
                         break;
+                    }
+                }
+                
+                // 尝试滚动订单列表区域触发加载
+                if (attempt === 2) {
+                    const orderList = document.querySelector('[class*="order-list"], [class*="entrust"], [class*="scroll"]');
+                    if (orderList) {
+                        orderList.scrollTop = 0;
+                        log('尝试滚动订单列表触发加载', 'info');
+                    }
+                }
+                
+                await sleep(500);
+            }
+            
+            // 3. 如果按钮禁用，尝试查找单个订单的撤销按钮
+            if (cancelButton && !buttonEnabled) {
+                log('全部撤销按钮被禁用，尝试逐个撤销订单...', 'warn');
+                
+                // 查找订单行中的撤销按钮
+                const orderRows = document.querySelectorAll('[class*="order-row"], [class*="entrust-item"], tr[class*="row"]');
+                let cancelledCount = 0;
+                
+                for (const row of orderRows) {
+                    const rowCancelBtn = row.querySelector('button');
+                    if (rowCancelBtn && (rowCancelBtn.textContent.includes('撤销') || rowCancelBtn.textContent.includes('撤单'))) {
+                        clickElement(rowCancelBtn);
+                        await sleep(300);
+                        
+                        // 处理确认弹窗
+                        const confirmBtn = document.querySelector('[class*="confirm"], button:not([disabled])');
+                        if (confirmBtn && (confirmBtn.textContent.includes('确定') || confirmBtn.textContent.includes('确认'))) {
+                            clickElement(confirmBtn);
+                            await sleep(200);
+                        }
+                        
+                        cancelledCount++;
+                        log(`已撤销第 ${cancelledCount} 个订单`, 'info');
+                    }
+                }
+                
+                if (cancelledCount > 0) {
+                    state.stats.cancelled += cancelledCount;
+                    log(`已逐个撤销 ${cancelledCount} 个订单`, 'success');
+                    return { success: true, message: `已撤销 ${cancelledCount} 个订单` };
+                }
+                
+                // 如果没找到单个撤销按钮，说明确实没有订单
+                log('未找到可撤销的订单（按钮禁用且无订单行）', 'warn');
+                return { success: true, message: '无订单需要撤销（按钮禁用）' };
+            }
+            
+            // 4. 点击全部撤销按钮
+            if (cancelButton && buttonEnabled) {
+                clickElement(cancelButton);
+                log('已点击撤销按钮，等待确认弹窗...', 'info');
+                await sleep(800);
+
+                // 5. 查找确认按钮（弹窗中）
+                const confirmButtons = document.querySelectorAll('button');
+                for (const btn of confirmButtons) {
+                    const text = btn.textContent.trim();
+                    if (text === '确定' || text === '确认' || text === '是' || 
+                        text === 'OK' || text === 'Confirm') {
+                        const rect = btn.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            clickElement(btn);
+                            log(`点击确认按钮: "${text}"`, 'info');
+                            await sleep(500);
+                            break;
+                        }
                     }
                 }
 
@@ -382,7 +604,9 @@
                 return { success: true, message: '已执行一键撤销' };
             }
 
-            throw new Error('未找到撤销按钮');
+            // 6. 如果没有撤销按钮，可能没有订单
+            log('未找到撤销按钮，可能没有待撤销的订单', 'warn');
+            return { success: true, message: '无订单需要撤销' };
         } catch (e) {
             log(`撤销订单失败: ${e.message}`, 'error');
             return { success: false, error: e.message };
@@ -694,12 +918,12 @@
         }
 
         // 发送结果回服务器（包含请求ID以便后端匹配响应）
-        sendWsMessage({ 
-            type: 'response', 
+        sendWsMessage({
+            type: 'response',
             id: id,
-            action, 
-            result, 
-            timestamp: new Date().toISOString() 
+            action,
+            result,
+            timestamp: new Date().toISOString()
         });
     }
 
@@ -711,7 +935,7 @@
             // 例如: /futures/BTC-USDT -> /futures/ETH-USDT
             const currentUrl = window.location.href;
             const symbolFormatted = symbol.replace('USDT', '-USDT');
-            
+
             if (currentUrl.includes('/futures/')) {
                 const newUrl = currentUrl.replace(/\/futures\/[A-Z]+-USDT/, `/futures/${symbolFormatted}`);
                 if (newUrl !== currentUrl) {
@@ -719,7 +943,7 @@
                     return { success: true, message: `已切换到 ${symbol}` };
                 }
             }
-            
+
             // 如果URL已经是目标交易对，直接返回成功
             return { success: true, message: `当前已在 ${symbol}` };
         } catch (e) {
@@ -792,22 +1016,22 @@
     // ===================================================================
     // 13. 暴露API到页面上下文 (关键修复)
     // ===================================================================
-    
+
     // 方法1: 直接赋值给window
     window.weexBot = weexBotAPI;
-    
+
     // 方法2: 使用unsafeWindow (Tampermonkey特有)
     if (typeof unsafeWindow !== 'undefined') {
         unsafeWindow.weexBot = weexBotAPI;
     }
-    
+
     // 方法3: 通过script标签注入到页面上下文 (最可靠的方法)
     function injectToPageContext() {
         const apiString = JSON.stringify({
-            version: '4.0.1',
+            version: '4.0.2',
             injected: true
         });
-        
+
         const scriptContent = `
             (function() {
                 // 创建一个临时对象来保存状态
@@ -857,15 +1081,15 @@
                 console.log('[WEEX Bot] 页面上下文代理已初始化');
             })();
         `;
-        
+
         const script = document.createElement('script');
         script.textContent = scriptContent;
         (document.head || document.documentElement).appendChild(script);
         script.remove();
     }
-    
+
     // 监听页面上下文的调用请求
-    window.addEventListener('message', async function(event) {
+    window.addEventListener('message', async function (event) {
         if (event.data && event.data.type === 'WEEX_BOT_CALL') {
             const { method, args, callId } = event.data;
             try {
@@ -881,7 +1105,7 @@
             }
         }
     });
-    
+
     // 注入到页面上下文
     injectToPageContext();
 
@@ -892,7 +1116,7 @@
     // 延迟打印日志，确保页面加载完成
     const printWelcome = () => {
         log('========================================', 'info');
-        log('WEEX 统一交易机器人已加载 (v4.0.1)', 'success');
+        log('WEEX 统一交易机器人已加载 (v4.0.2)', 'success');
         log('使用 weexBot 调用功能', 'info');
         log('========================================', 'info');
         log('可用命令:', 'info');
@@ -907,7 +1131,7 @@
         log('  weexBot.closePosition("BTC")  - 平仓', 'info');
         log('  weexBot.connect()             - 连接后端', 'info');
         log('========================================', 'info');
-        
+
         // 验证API是否成功暴露
         if (typeof window.weexBot !== 'undefined') {
             log('✅ weexBot API 已成功暴露到全局作用域', 'success');
@@ -915,7 +1139,7 @@
             log('⚠️ 如果控制台无法访问weexBot，请尝试刷新页面', 'warn');
         }
     };
-    
+
     // 根据页面加载状态决定何时打印欢迎信息
     if (document.readyState === 'complete') {
         printWelcome();

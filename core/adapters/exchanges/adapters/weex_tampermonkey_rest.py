@@ -288,23 +288,39 @@ class WeexTampermonkeyRest:
         if result and result.get('result', {}).get('success'):
             data = result['result'].get('data', {})
             
+            # 🔍 调试日志：打印原始返回数据
+            if self.logger:
+                self.logger.debug(f"[WEEX] get_balances 原始数据: {data}")
+            
             # 解析余额数据
             balances = []
             
             # 可用余额
-            available = data.get('availableBalance', '0')
-            if available:
+            available = data.get('availableBalance')
+            if self.logger:
+                self.logger.info(f"[WEEX] 可用余额原始值: '{available}'")
+            
+            if available is not None:
                 try:
+                    # 转为字符串处理
+                    available_str = str(available) if available else '0'
                     # 清理字符串，只保留数字和小数点
-                    available = str(available).replace(',', '').replace('USDT', '').replace(' ', '').strip()
+                    available_str = available_str.replace(',', '').replace('USDT', '').replace('USDC', '').replace(' ', '').strip()
                     # 移除所有非数字字符（除了小数点和负号）
                     import re
-                    available = re.sub(r'[^\d.\-]', '', available)
-                    if not available or available == '' or available == '.':
-                        available = '0'
-                    available_decimal = Decimal(available)
+                    available_str = re.sub(r'[^\d.\-]', '', available_str)
+                    # 处理空字符串或只有小数点的情况
+                    if not available_str or available_str == '.' or available_str == '-' or available_str == '-.':
+                        available_str = '0'
+                    # 处理多个小数点的情况
+                    if available_str.count('.') > 1:
+                        parts = available_str.split('.')
+                        available_str = parts[0] + '.' + ''.join(parts[1:])
+                    
+                    available_decimal = Decimal(available_str)
                 except Exception as e:
-                    self.logger.warning(f"解析余额失败: {available}, 错误: {e}")
+                    if self.logger:
+                        self.logger.warning(f"解析余额失败: '{available}', 错误: {e}")
                     available_decimal = Decimal("0")
                 
                 balances.append(BalanceData(
@@ -337,9 +353,17 @@ class WeexTampermonkeyRest:
             data = result['result'].get('data', {})
             positions = []
             
+            # 🔍 调试日志：打印原始返回数据
+            if self.logger:
+                self.logger.debug(f"[WEEX] get_account 原始数据: {data}")
+            
             # 解析持仓数据
             position_data = data.get('position', {})
             if position_data:
+                # 🔍 调试日志：打印持仓原始数据
+                if self.logger:
+                    self.logger.info(f"[WEEX] 持仓原始数据: {position_data}")
+                
                 size_str = position_data.get('size', '0')
                 size = Decimal(str(size_str).replace(',', '')) if size_str else Decimal("0")
                 
@@ -347,19 +371,40 @@ class WeexTampermonkeyRest:
                     entry_price_str = position_data.get('entryPrice', '0')
                     entry_price = Decimal(str(entry_price_str).replace(',', '')) if entry_price_str else Decimal("0")
                     
-                    unrealized_pnl_str = position_data.get('unrealizedPnl', '0')
+                    # 支持 unrealizedPnl 和 pnl 两种字段名（兼容性）
+                    unrealized_pnl_str = position_data.get('unrealizedPnl') or position_data.get('pnl', '0')
                     unrealized_pnl = Decimal(str(unrealized_pnl_str).replace(',', '')) if unrealized_pnl_str else Decimal("0")
+                    
+                    # 从油猴脚本返回的 side 字段判断方向
+                    side_str = position_data.get('side', '').lower()
+                    if side_str == 'long':
+                        position_side = PositionSide.LONG
+                    elif side_str == 'short':
+                        position_side = PositionSide.SHORT
+                    else:
+                        # 兼容旧版：如果 side 字段不是 long/short，用 size 的正负判断
+                        position_side = PositionSide.LONG if size > 0 else PositionSide.SHORT
+                    
+                    # 🔍 调试日志：打印解析后的数据
+                    if self.logger:
+                        self.logger.info(f"[WEEX] 持仓解析: side={position_side.value}, size={size}, entry_price={entry_price}, unrealized_pnl={unrealized_pnl}")
                     
                     positions.append(PositionData(
                         symbol=self._base.get_current_symbol(),
-                        side=PositionSide.LONG if size > 0 else PositionSide.SHORT,
+                        side=position_side,
                         size=abs(size),
                         entry_price=entry_price,
                         mark_price=Decimal("0"),
                         liquidation_price=Decimal("0"),
                         unrealized_pnl=unrealized_pnl,
+                        realized_pnl=Decimal("0"),
+                        current_price=entry_price,  # 使用入场价作为当前价格
+                        percentage=Decimal("0"),
+                        margin=Decimal("0"),
                         leverage=20,  # 默认杠杆
-                        margin_mode="cross"
+                        margin_mode="cross",
+                        timestamp=datetime.now(),
+                        raw_data=position_data
                     ))
             
             return positions
