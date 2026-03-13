@@ -1,0 +1,27 @@
+{
+  "apps": [
+    {
+      "name": "crypto_grid",
+      "script": "web/app.py",
+      "cwd": "/www/wwwroot/crypto_grid",
+      "interpreter": "python3",
+      "args": "--host 0.0.0.0 --port 8000",
+      "env": {
+        "PYTHONPATH": "/www/wwwroot/crypto_grid",
+        "DASHBOARD_API_KEY": "internal-grid-ops-6f9b2d4e91c84a6d",
+        "GRID_MODEL_SIGNING_KEY": "internal-grid-sign-2d1f7a8c3e4b95d0"
+      },
+      "instances": 1,
+      "exec_mode": "fork",
+      "watch": false,
+      "autorestart": true,
+      "max_restarts": 10,
+      "restart_delay": 3000,
+      "error_file": "/root/.pm2/logs/crypto_grid-error.log",
+      "out_file": "/root/.pm2/logs/crypto_grid-out.log",
+      "log_date_format": "YYYY-MM-DD HH:mm:ss Z",
+      "merge_logs": true,
+      "time": true
+    }
+  ]
+}
