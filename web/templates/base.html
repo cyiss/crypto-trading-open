@@ -33,6 +33,7 @@
                 <a href="/scanner" class="text-gray-300 hover:text-white {% if request.url.path == '/scanner' %}text-white font-semibold{% endif %}">扫描器历史</a>
                 <a href="/performance" class="text-gray-300 hover:text-white {% if request.url.path == '/performance' %}text-white font-semibold{% endif %}">网格绩效</a>
                 <a href="/auto-trading" class="text-gray-300 hover:text-white {% if request.url.path == '/auto-trading' %}text-white font-semibold{% endif %}">自动交易</a>
+                <a href="/control" class="text-gray-300 hover:text-white {% if request.url.path == '/control' %}text-white font-semibold{% endif %}">⚙️ 控制面板</a>
             </div>
             <div class="flex items-center space-x-4">
                 <span id="auto-refresh-label" class="text-sm text-gray-400">自动刷新: 30s</span>
@@ -120,6 +121,33 @@
                 return null;
             }
         }
+
+        async function apiPost(url, data = null) {
+            try {
+                const options = {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': getDashboardApiKey()
+                    }
+                };
+                if (data) {
+                    options.body = JSON.stringify(data);
+                }
+                const resp = await fetch(url, options);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                return await resp.json();
+            } catch (e) {
+                console.error(`API POST error: ${url}`, e);
+                alert(`操作失败: ${e.message}`);
+                return null;
+            }
+        }
+
+        // Mock process object for uptime (browser doesn't have Node's process)
+        const process = {
+            uptime: () => Math.floor((Date.now() - performance.timeOrigin) / 1000)
+        };
 
         function getDashboardApiKey() {
             const stored = localStorage.getItem('dashboard_api_key') || sessionStorage.getItem('dashboard_api_key');

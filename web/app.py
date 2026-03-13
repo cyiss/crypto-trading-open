@@ -26,6 +26,7 @@ from web.api.scanner_api import create_scanner_router
 from web.api.grid_api import create_grid_router
 from web.api.ml_api import create_ml_router
 from web.api.auto_trading_api import create_auto_trading_router
+from web.api.control_api import create_control_router
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ def create_app(db_path: str = "data/grid_scanner.db") -> FastAPI:
     app.include_router(create_grid_router(), prefix="/api/grid", tags=["Grid"])
     app.include_router(create_ml_router(), prefix="/api/ml", tags=["ML"])
     app.include_router(create_auto_trading_router(), prefix="/api/auto", tags=["Auto Trading"])
+    app.include_router(create_control_router(), prefix="/api/control", tags=["Control"])
 
     # 静态文件和模板
     web_dir = Path(__file__).parent
@@ -108,6 +110,10 @@ def create_app(db_path: str = "data/grid_scanner.db") -> FastAPI:
     @app.get("/auto-trading", response_class=HTMLResponse)
     async def auto_trading_page(request: Request):
         return templates.TemplateResponse("auto_trading.html", {"request": request})
+
+    @app.get("/control", response_class=HTMLResponse)
+    async def control_page(request: Request):
+        return templates.TemplateResponse("control.html", {"request": request})
 
     return app
 

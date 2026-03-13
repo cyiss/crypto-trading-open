@@ -1,0 +1,347 @@
+{% extends "base.html" %}
+{% block title %}Grid Trading - 系统控制{% endblock %}
+
+{% block content %}
+<!-- System Status -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <div class="card">
+        <div class="text-gray-400 text-sm">扫描器状态</div>
+        <div class="stat-value" id="scanner-status">
+            <span class="text-gray-400">检测中...</span>
+        </div>
+        <div class="text-xs text-gray-500 mt-1" id="scanner-uptime">--</div>
+    </div>
+    <div class="card">
+        <div class="text-gray-400 text-sm">Dashboard状态</div>
+        <div class="stat-value text-green-400" id="dashboard-status">
+            <span class="text-gray-400">检测中...</span>
+        </div>
+        <div class="text-xs text-gray-500 mt-1" id="dashboard-info">--</div>
+    </div>
+    <div class="card">
+        <div class="text-gray-400 text-sm">系统运行时间</div>
+        <div class="stat-value text-blue-400" id="system-uptime">--</div>
+        <div class="text-xs text-gray-500 mt-1" id="system-time">--</div>
+    </div>
+</div>
+
+<!-- Scanner Control -->
+<div class="card mb-6">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-lg font-semibold">🔍 扫描器控制</h2>
+        <div class="space-x-2">
+            <button onclick="startScanner()" class="bg-green-600 hover:bg-green-500 px-4 py-2 rounded text-sm">
+                ▶ 启动
+            </button>
+            <button onclick="stopScanner()" class="bg-red-600 hover:bg-red-500 px-4 py-2 rounded text-sm">
+                ⏹ 停止
+            </button>
+            <button onclick="restartScanner()" class="bg-yellow-600 hover:bg-yellow-500 px-4 py-2 rounded text-sm">
+                🔄 重启
+            </button>
+            <button onclick="showScannerLogs()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm">
+                📋 日志
+            </button>
+        </div>
+    </div>
+    <div id="scanner-info" class="text-sm text-gray-400">
+        <p>扫描器会自动扫描Lighter交易所的代币，并将数据持久化到Web Dashboard。</p>
+        <p class="mt-2">点击"启动"按钮开始扫描。</p>
+    </div>
+</div>
+
+<!-- Dashboard Control -->
+<div class="card mb-6">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-lg font-semibold">📊 Dashboard控制</h2>
+        <div class="space-x-2">
+            <button onclick="restartDashboard()" class="bg-yellow-600 hover:bg-yellow-500 px-4 py-2 rounded text-sm">
+                🔄 重启
+            </button>
+            <button onclick="showDashboardLogs()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm">
+                📋 日志
+            </button>
+        </div>
+    </div>
+    <div id="dashboard-info-panel" class="text-sm text-gray-400">
+        <p>Dashboard服务由PM2管理，会自动重启。</p>
+        <p class="mt-2">当前运行在端口: <span class="text-white font-semibold">8080</span></p>
+    </div>
+</div>
+
+<!-- ML Model Control -->
+<div class="card mb-6">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-lg font-semibold">🤖 ML模型控制</h2>
+        <div class="space-x-2">
+            <button onclick="trainModel()" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded text-sm">
+                🎯 训练模型
+            </button>
+            <button onclick="showModelStatus()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm">
+                📊 状态
+            </button>
+        </div>
+    </div>
+    <div id="ml-info" class="text-sm text-gray-400">
+        <p>训练ML模型需要扫描器先运行一段时间收集数据。</p>
+        <p class="mt-2">训练完成后，模型会自动用于参数推荐。</p>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="card mb-6">
+    <h2 class="text-lg font-semibold mb-4">⚡ 快捷操作</h2>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <button onclick="location.href='/'" class="bg-gray-700 hover:bg-gray-600 p-3 rounded text-sm">
+            🏠 Dashboard首页
+        </button>
+        <button onclick="location.href='/performance'" class="bg-gray-700 hover:bg-gray-600 p-3 rounded text-sm">
+            📈 绩效分析
+        </button>
+        <button onclick="refreshAllStatus()" class="bg-gray-700 hover:bg-gray-600 p-3 rounded text-sm">
+            🔄 刷新状态
+        </button>
+        <button onclick="showSystemInfo()" class="bg-gray-700 hover:bg-gray-600 p-3 rounded text-sm">
+            ℹ️ 系统信息
+        </button>
+    </div>
+</div>
+
+<!-- Log Viewer Modal -->
+<div id="log-modal" class="fixed inset-0 bg-black bg-opacity-75 hidden z-50 overflow-auto">
+    <div class="max-w-6xl mx-auto my-10 p-6">
+        <div class="bg-gray-800 rounded-lg p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-semibold" id="log-title">日志查看器</h3>
+                <button onclick="closeLogModal()" class="text-gray-400 hover:text-white text-2xl">&times;</button>
+            </div>
+            <div class="bg-gray-900 rounded p-4 h-96 overflow-auto">
+                <pre id="log-content" class="text-xs text-green-400 font-mono whitespace-pre-wrap"></pre>
+            </div>
+            <div class="mt-4 flex justify-end space-x-2">
+                <button onclick="refreshCurrentLog()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm">
+                    🔄 刷新
+                </button>
+                <button onclick="closeLogModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">
+                    关闭
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    let currentLogService = '';
+
+    async function refreshData() {
+        await refreshAllStatus();
+    }
+
+    async function refreshAllStatus() {
+        showLoading();
+
+        try {
+            // 扫描器状态
+            const scannerData = await apiGet('/api/control/scanner/status');
+            if (scannerData) {
+                const statusEl = document.getElementById('scanner-status');
+                const uptimeEl = document.getElementById('scanner-uptime');
+
+                if (scannerData.running) {
+                    statusEl.innerHTML = '<span class="text-green-400">🟢 运行中</span>';
+                    if (scannerData.uptime_seconds) {
+                        const uptime = formatUptime(scannerData.uptime_seconds);
+                        uptimeEl.textContent = `运行时间: ${uptime} | PID: ${scannerData.pid}`;
+                    }
+                } else {
+                    statusEl.innerHTML = '<span class="text-gray-400">⏸ 已停止</span>';
+                    uptimeEl.textContent = '未运行';
+                }
+            }
+
+            // Dashboard状态
+            const dashData = await apiGet('/api/control/dashboard/status');
+            if (dashData) {
+                const statusEl = document.getElementById('dashboard-status');
+                const infoEl = document.getElementById('dashboard-info');
+
+                if (dashData.running) {
+                    statusEl.innerHTML = '<span class="text-green-400">🟢 在线</span>';
+                    const mem = (dashData.memory / 1024 / 1024).toFixed(1);
+                    infoEl.textContent = `内存: ${mem}MB | CPU: ${dashData.cpu}% | 重启: ${dashData.restarts}次`;
+                } else {
+                    statusEl.innerHTML = '<span class="text-red-400">🔴 离线</span>';
+                    infoEl.textContent = '服务未运行';
+                }
+            }
+
+            // 系统时间
+            const now = new Date();
+            document.getElementById('system-time').textContent = now.toLocaleString('zh-CN');
+            document.getElementById('system-uptime').textContent = formatUptime(Math.floor(process.uptime()));
+
+        } catch (e) {
+            console.error('刷新状态失败:', e);
+        }
+
+        hideLoading();
+    }
+
+    async function startScanner() {
+        if (!confirm('确定要启动扫描器吗？')) return;
+
+        showLoading();
+        const result = await apiPost('/api/control/scanner/start');
+        hideLoading();
+
+        if (result) {
+            alert(result.message || '启动成功');
+            await refreshAllStatus();
+        }
+    }
+
+    async function stopScanner() {
+        if (!confirm('确定要停止扫描器吗？')) return;
+
+        showLoading();
+        const result = await apiPost('/api/control/scanner/stop');
+        hideLoading();
+
+        if (result) {
+            alert(result.message || '停止成功');
+            await refreshAllStatus();
+        }
+    }
+
+    async function restartScanner() {
+        if (!confirm('确定要重启扫描器吗？')) return;
+
+        showLoading();
+        const result = await apiPost('/api/control/scanner/restart');
+        hideLoading();
+
+        if (result) {
+            alert(result.message || '重启成功');
+            await refreshAllStatus();
+        }
+    }
+
+    async function restartDashboard() {
+        if (!confirm('确定要重启Dashboard吗？这会导致短暂无法访问。')) return;
+
+        showLoading();
+        const result = await apiPost('/api/control/dashboard/restart');
+        hideLoading();
+
+        if (result) {
+            alert(result.message || '重启成功');
+            setTimeout(() => location.reload(), 2000);
+        }
+    }
+
+    async function showScannerLogs() {
+        currentLogService = 'scanner';
+        await loadAndShowLogs('scanner', '扫描器日志');
+    }
+
+    async function showDashboardLogs() {
+        currentLogService = 'dashboard';
+        await loadAndShowLogs('dashboard', 'Dashboard日志');
+    }
+
+    async function loadAndShowLogs(service, title) {
+        document.getElementById('log-title').textContent = title;
+        document.getElementById('log-modal').classList.remove('hidden');
+
+        const data = await apiGet(`/api/control/logs/${service}?lines=100`);
+        if (data && data.lines) {
+            const content = data.lines.join('\n');
+            document.getElementById('log-content').textContent = content || '暂无日志';
+        }
+    }
+
+    async function refreshCurrentLog() {
+        if (currentLogService) {
+            const title = document.getElementById('log-title').textContent;
+            await loadAndShowLogs(currentLogService, title);
+        }
+    }
+
+    function closeLogModal() {
+        document.getElementById('log-modal').classList.add('hidden');
+    }
+
+    async function trainModel() {
+        if (!confirm('训练ML模型可能需要几分钟，确定继续吗？')) return;
+
+        showLoading();
+        const result = await apiPost('/api/ml/train');
+        hideLoading();
+
+        if (result) {
+            if (result.status === 'success') {
+                alert(`训练成功！\n样本数: ${result.samples}\nR²分数: ${result.r2_score}\nMAE: ${result.mae}`);
+            } else {
+                alert(result.message || '训练失败');
+            }
+        }
+    }
+
+    async function showModelStatus() {
+        const data = await apiGet('/api/ml/model_status');
+        if (data) {
+            let msg = 'ML模型状态:\n\n';
+            msg += `可用: ${data.model_available ? '是' : '否'}\n`;
+            if (data.model_available) {
+                msg += `版本: ${data.model_version}\n`;
+                msg += `训练样本: ${data.training_samples}\n`;
+                msg += `预测误差: ${data.avg_prediction_error}%\n`;
+            }
+            alert(msg);
+        }
+    }
+
+    function showSystemInfo() {
+        alert('系统信息:\n\n' +
+            '服务器: 8.216.39.214\n' +
+            '端口: 8080\n' +
+            'Dashboard: http://8.216.39.214:8080\n' +
+            '代码路径: /www/wwwroot/crypto_grid\n\n' +
+            '功能:\n' +
+            '✅ 网格波动率扫描器\n' +
+            '✅ ML参数优化\n' +
+            '✅ 自动网格启动\n' +
+            '✅ 资金分配管理'
+        );
+    }
+
+    function formatUptime(seconds) {
+        if (!seconds || seconds <= 0) return '--';
+
+        const days = Math.floor(seconds / 86400);
+        const hours = Math.floor((seconds % 86400) / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+
+        if (days > 0) return `${days}天${hours}时`;
+        if (hours > 0) return `${hours}时${mins}分`;
+        return `${mins}分钟`;
+    }
+
+    // 页面加载时刷新状态
+    document.addEventListener('DOMContentLoaded', () => {
+        refreshAllStatus();
+        // 每30秒自动刷新
+        setInterval(refreshAllStatus, 30000);
+    });
+
+    // ESC关闭模态框
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            closeLogModal();
+        }
+    });
+</script>
+{% endblock %}
