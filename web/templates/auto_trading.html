@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block title %}Grid Trading - 自动交易{% endblock %}
+
+{% block content %}
+<!-- Auto Trading Status -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <div class="card">
+        <div class="text-gray-400 text-sm">自动扫描状态</div>
+        <div class="stat-value" id="auto-status">
+            <span class="text-gray-400">未启动</span>
+        </div>
+    </div>
+    <div class="card">
+        <div class="text-gray-400 text-sm">活跃网格</div>
+        <div class="stat-value text-green-400" id="active-grids-count">0</div>
+    </div>
+    <div class="card">
+        <div class="text-gray-400 text-sm">暂停网格</div>
+        <div class="stat-value text-yellow-400" id="paused-grids-count">0</div>
+    </div>
+</div>
+
+<!-- Capital Allocation -->
+<div class="card mb-6">
+    <h2 class="text-lg font-semibold mb-4">💰 资金分配</h2>
+    <div id="capital-status">
+        <p class="text-gray-400">加载中...</p>
+    </div>
+</div>
+
+<!-- Active Grids Table -->
+<div class="card mb-6">
+    <h2 class="text-lg font-semibold mb-4">🎯 自动启动的网格</h2>
+    <div class="overflow-x-auto">
+        <table>
+            <thead>
+                <tr>
+                    <th>代币</th>
+                    <th>评级</th>
+                    <th>APR</th>
+                    <th>启动时间</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody id="active-grids-body">
+                <tr><td colspan="6" class="text-center text-gray-500">加载中...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ML Recommendations -->
+<div class="card">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-lg font-semibold">🤖 ML参数推荐</h2>
+        <button onclick="refreshML()" class="bg-blue-600 hover:bg-blue-500 px-4 py-1 rounded text-sm">
+            刷新推荐
+        </button>
+    </div>
+    <div id="ml-status">
+        <p class="text-gray-400">加载中...</p>
+    </div>
+    <div id="ml-recommendations" class="mt-4">
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    async function refreshData() {
+        await Promise.all([
+            loadAutoTradingStatus(),
+            loadCapitalStatus(),
+            loadMLStatus(),
+        ]);
+    }
+
+    async function loadAutoTradingStatus() {
+        const data = await apiGet('/api/auto/status');
+        if (!data) return;
+
+        const launcher = data.auto_launcher || {};
+        document.getElementById('auto-status').innerHTML = launcher.running
+            ? '<span class="text-green-400">🟢 运行中</span>'
+            : '<span class="text-gray-400">⏸ 已停止</span>';
+        document.getElementById('active-grids-count').textContent = launcher.active_grids || 0;
+        document.getElementById('paused-grids-count').textContent = launcher.paused_grids || 0;
+
+        // Load active grids list
+        const activeData = await apiGet('/api/auto/active-grids');
+        if (activeData) {
+            const grids = activeData.grids || [];
+            const paused = activeData.paused || [];
+            const tbody = document.getElementById('active-grids-body');
+
+            if (grids.length === 0 && paused.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-gray-500">暂无自动启动的网格</td></tr>';
+            } else {
+                const allSymbols = [...grids, ...paused];
+                tbody.innerHTML = allSymbols.map(s => {
+                    const isPaused = paused.includes(s);
+                    return `
+                        <tr class="hover:bg-gray-700">
+                            <td class="font-semibold">${escapeHtml(s)}</td>
+                            <td>--</td>
+                            <td>--</td>
+                            <td>--</td>
+                            <td>${isPaused ? '<span class="badge-c">已暂停</span>' : '<span class="badge-b">运行中</span>'}</td>
+                            <td>
+                                ${isPaused ? `<button class="resume-btn text-blue-400 text-sm" data-symbol="${escapeAttr(s)}">▶ 恢复</button>` : ''}
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+
+                document.querySelectorAll('.resume-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const symbol = btn.dataset.symbol || '';
+                        if (symbol) {
+                            resumeGrid(symbol);
+                        }
+                    });
+                });
+            }
+        }
+    }
+
+    async function loadCapitalStatus() {
+        const data = await apiGet('/api/auto/capital');
+        if (!data || data.message) {
+            document.getElementById('capital-status').innerHTML = '<p class="text-gray-400">资金分配器未配置</p>';
+            return;
+        }
+
+        const strategies = data.strategies || {};
+        let html = '<div class="grid grid-cols-2 md:grid-cols-4 gap-4">';
+        for (const [name, info] of Object.entries(strategies)) {
+            html += `
+                <div class="bg-gray-800 p-3 rounded">
+                    <div class="text-sm text-gray-400">${escapeHtml(name)}</div>
+                    <div class="text-lg font-bold text-blue-400">$${(info.allocated || 0).toFixed(0)}</div>
+                    <div class="text-xs text-gray-500">可用: $${(info.available || 0).toFixed(0)}</div>
+                    <div class="w-full bg-gray-700 rounded-full h-2 mt-1">
+                        <div class="bg-blue-500 h-2 rounded-full" style="width:${((info.ratio || 0) * 100).toFixed(0)}%"></div>
+                    </div>
+                </div>
+            `;
+        }
+        html += '</div>';
+        document.getElementById('capital-status').innerHTML = html;
+    }
+
+    async function loadMLStatus() {
+        const data = await apiGet('/api/ml/model_status');
+        if (!data) return;
+
+        const html = data.model_available
+            ? `<div class="grid grid-cols-3 gap-4">
+                <div><span class="text-gray-400">模型版本:</span> <span class="text-green-400">v${escapeHtml(data.model_version || '--')}</span></div>
+                <div><span class="text-gray-400">训练样本:</span> <span>${data.training_samples || 0}</span></div>
+                <div><span class="text-gray-400">预测误差:</span> <span>${(data.avg_prediction_error || 0).toFixed(2)}%</span></div>
+               </div>`
+            : '<p class="text-gray-400">ML模型未训练 - <a href="/performance" class="text-blue-400">前往绩效页训练模型</a></p>';
+
+        document.getElementById('ml-status').innerHTML = html;
+    }
+
+    async function refreshML() {
+        showLoading();
+        const data = await apiGet('/api/ml/recommendations?volatility=0.5&trend=0');
+        if (data && data.recommendations && data.recommendations.length > 0) {
+            const rec = data.recommendations[0];
+            const html = `
+                <div class="bg-gray-800 p-4 rounded">
+                    <div class="text-green-400 font-semibold mb-2">✅ 推荐调整参数</div>
+                    <div class="grid grid-cols-2 gap-2 text-sm">
+                        <div>预测APR: <span class="text-green-400">${rec.predicted_apr}%</span></div>
+                        <div>提升: <span class="text-green-400">+${rec.improvement}%</span></div>
+                        <div>置信度: ${(rec.confidence * 100).toFixed(0)}%</div>
+                    </div>
+                    <div class="mt-2 text-xs text-gray-400">
+                        推荐参数: interval=${escapeHtml(rec.new_params?.grid_interval || '--')},
+                        amount=${escapeHtml(rec.new_params?.order_amount || '--')}
+                    </div>
+                </div>
+            `;
+            document.getElementById('ml-recommendations').innerHTML = html;
+        } else {
+            document.getElementById('ml-recommendations').innerHTML =
+                '<p class="text-gray-400">当前参数已在最优范围内，无需调整</p>';
+        }
+        hideLoading();
+    }
+
+    async function resumeGrid(symbol) {
+        const resp = await apiRequest(`/api/auto/resume/${encodeURIComponent(symbol)}`, { method: 'POST' });
+        if (resp.ok) {
+            await loadAutoTradingStatus();
+        }
+    }
+</script>
+{% endblock %}

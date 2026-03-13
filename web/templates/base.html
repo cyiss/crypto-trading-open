@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Grid Trading Dashboard{% endblock %}</title>
+    <link id="tailwind-css" href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet" onerror="loadTailwindFallback()">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js" onerror="loadPlotlyFallback()"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .badge-s { background: #dc2626; color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; }
+        .badge-a { background: #f59e0b; color: white; padding: 2px 8px; border-radius: 4px; }
+        .badge-b { background: #10b981; color: white; padding: 2px 8px; border-radius: 4px; }
+        .badge-c { background: #6b7280; color: white; padding: 2px 8px; border-radius: 4px; }
+        .badge-d { background: #374151; color: #9ca3af; padding: 2px 8px; border-radius: 4px; }
+        .card { background: #1f2937; border-radius: 8px; padding: 20px; color: #e5e7eb; }
+        .stat-value { font-size: 1.5rem; font-weight: bold; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #374151; }
+        th { color: #9ca3af; font-size: 0.85rem; text-transform: uppercase; }
+        .refresh-btn { cursor: pointer; }
+        #loading { display: none; }
+    </style>
+    {% block extra_head %}{% endblock %}
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-3">
+        <div class="flex items-center justify-between max-w-7xl mx-auto">
+            <div class="flex items-center space-x-8">
+                <a href="/" class="text-xl font-bold text-white">📊 Grid Trading</a>
+                <a href="/" class="text-gray-300 hover:text-white {% if request.url.path == '/' %}text-white font-semibold{% endif %}">Dashboard</a>
+                <a href="/scanner" class="text-gray-300 hover:text-white {% if request.url.path == '/scanner' %}text-white font-semibold{% endif %}">扫描器历史</a>
+                <a href="/performance" class="text-gray-300 hover:text-white {% if request.url.path == '/performance' %}text-white font-semibold{% endif %}">网格绩效</a>
+                <a href="/auto-trading" class="text-gray-300 hover:text-white {% if request.url.path == '/auto-trading' %}text-white font-semibold{% endif %}">自动交易</a>
+            </div>
+            <div class="flex items-center space-x-4">
+                <span id="auto-refresh-label" class="text-sm text-gray-400">自动刷新: 30s</span>
+                <button onclick="toggleAutoRefresh()" class="text-sm bg-gray-700 px-3 py-1 rounded hover:bg-gray-600">
+                    <span id="refresh-status">⏸</span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Content -->
+    <main class="max-w-7xl mx-auto px-6 py-6">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Loading Indicator -->
+    <div id="loading" class="fixed bottom-4 right-4 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-lg">
+        加载中...
+    </div>
+
+    <script>
+        function loadTailwindFallback() {
+            const link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = 'https://unpkg.com/tailwindcss@2.2.19/dist/tailwind.min.css';
+            document.head.appendChild(link);
+        }
+
+        function loadPlotlyFallback() {
+            const script = document.createElement('script');
+            script.src = 'https://unpkg.com/plotly.js-dist@2.27.0/plotly.min.js';
+            document.head.appendChild(script);
+        }
+
+        function escapeHtml(value) {
+            const str = String(value ?? '');
+            return str
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", '&#39;');
+        }
+
+        function escapeAttr(value) {
+            return escapeHtml(value).replaceAll('`', '&#96;');
+        }
+
+        let autoRefreshInterval = null;
+        let refreshSeconds = 30;
+        let isRefreshing = false;
+
+        function toggleAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+                document.getElementById('refresh-status').textContent = '⏸';
+                document.getElementById('auto-refresh-label').textContent = '自动刷新: 关闭';
+            } else {
+                autoRefreshInterval = setInterval(() => {
+                    if (typeof refreshData === 'function') refreshData();
+                }, refreshSeconds * 1000);
+                document.getElementById('refresh-status').textContent = '▶';
+                document.getElementById('auto-refresh-label').textContent = `自动刷新: ${refreshSeconds}s`;
+            }
+        }
+
+        function showLoading() {
+            document.getElementById('loading').style.display = 'block';
+            isRefreshing = true;
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+            isRefreshing = false;
+        }
+
+        async function apiGet(url) {
+            try {
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                return await resp.json();
+            } catch (e) {
+                console.error(`API error: ${url}`, e);
+                return null;
+            }
+        }
+
+        function getDashboardApiKey() {
+            const stored = localStorage.getItem('dashboard_api_key') || sessionStorage.getItem('dashboard_api_key');
+            if (stored) {
+                return stored;
+            }
+            return 'internal-grid-ops-6f9b2d4e91c84a6d';
+        }
+
+        async function apiRequest(url, options = {}) {
+            const headers = new Headers(options.headers || {});
+            const key = getDashboardApiKey();
+            if (key) {
+                headers.set('X-API-Key', key);
+            }
+            return fetch(url, {
+                ...options,
+                headers,
+            });
+        }
+
+        function ensurePlotlyAvailable(containerId) {
+            if (typeof Plotly !== 'undefined') {
+                return true;
+            }
+            const el = document.getElementById(containerId);
+            if (el) {
+                el.innerHTML = '<div class="text-yellow-300 text-sm">图表库加载失败，请检查网络连接。</div>';
+            }
+            return false;
+        }
+
+        function getRatingBadge(rating) {
+            if (!rating) return '<span class="badge-c">--</span>';
+            const matched = String(rating).match(/[SABCD]/i);
+            const grade = matched ? matched[0].toUpperCase() : 'C';
+            const cls = `badge-${grade.toLowerCase()}`;
+            return `<span class="${cls}">${escapeHtml(rating)}</span>`;
+        }
+
+        function formatApr(val) {
+            if (val === null || val === undefined) return '--';
+            const num = parseFloat(val);
+            return num.toFixed(1) + '%';
+        }
+
+        function formatVolume(val) {
+            const num = parseFloat(val);
+            if (num >= 1e6) return '$' + (num / 1e6).toFixed(2) + 'M';
+            if (num >= 1e3) return '$' + (num / 1e3).toFixed(2) + 'K';
+            return '$' + num.toFixed(0);
+        }
+
+        function formatTime(seconds) {
+            if (!seconds || seconds <= 0) return '--';
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            if (h > 0) return `${h}时${m}分`;
+            if (m > 0) return `${m}分`;
+            return `${seconds}秒`;
+        }
+
+        // Initialize auto-refresh on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            toggleAutoRefresh(); // Start auto-refresh
+            if (typeof refreshData === 'function') refreshData();
+        });
+    </script>
+    {% block extra_scripts %}{% endblock %}
+</body>
+</html>

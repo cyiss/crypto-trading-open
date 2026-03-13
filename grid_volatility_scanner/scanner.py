@@ -72,6 +72,11 @@ class GridVolatilityScanner:
         self._running = False
         self._scan_start_time: Optional[datetime] = None
 
+        # 🔥 历史持久化（Web Dashboard）
+        self.history_storage = None
+        self._last_snapshot_time: Optional[datetime] = None
+        self._snapshot_save_interval = 60  # 每60秒保存一次快照
+
         # 🔥 订阅统计
         self._subscribed_symbols_count = 0  # 已订阅的代币数量
         self._subscribed_symbols_list = []  # 已订阅的代币列表（保留顺序）
@@ -103,6 +108,11 @@ class GridVolatilityScanner:
         """获取默认配置文件路径"""
         current_dir = Path(__file__).parent
         return str(current_dir / "config" / "market_config.yaml")
+
+    def set_history_storage(self, storage):
+        """设置历史存储器（Web Dashboard持久化）"""
+        self.history_storage = storage
+        logger.info("✅ 扫描器历史持久化已启用")
 
     async def initialize(self):
         """初始化扫描器"""
@@ -992,6 +1002,22 @@ class GridVolatilityScanner:
                         failed=len(self._failed_subscribe_symbols),
                         received=len(self._received_ticker_symbols)
                     )
+
+                # 🔥 保存历史快照（Web Dashboard持久化，每60秒一次）
+                if self.history_storage:
+                    now = datetime.now()
+                    if (self._last_snapshot_time is None or
+                            (now - self._last_snapshot_time).total_seconds() >= self._snapshot_save_interval):
+                        try:
+                            snapshot_data = [r.to_dict() for r in results if hasattr(r, 'to_dict') and r.has_trading_activity]
+                            if snapshot_data:
+                                await self.history_storage.save_batch_snapshots(
+                                    exchange=self.adapter.__class__.__name__.replace('Adapter', '').lower(),
+                                    results=snapshot_data
+                                )
+                            self._last_snapshot_time = now
+                        except Exception as e:
+                            logger.warning(f"保存历史快照失败: {e}")
                 
                 # 🔥 在运行5分钟后显示订阅统计（只显示一次）
                 if not subscription_stats_logged and self._scan_start_time:

@@ -204,6 +204,19 @@ async def main():
         help='日志级别（默认: INFO）'
     )
 
+    parser.add_argument(
+        '--web',
+        action='store_true',
+        help='启用Web Dashboard数据持久化（需要同时运行 python web/app.py）'
+    )
+
+    parser.add_argument(
+        '--web-db',
+        type=str,
+        default='data/grid_scanner.db',
+        help='Web Dashboard数据库路径（默认: data/grid_scanner.db）'
+    )
+
     args = parser.parse_args()
 
     # 打印启动信息
@@ -240,6 +253,15 @@ async def main():
 
         # 3. 初始化扫描器
         await scanner.initialize()
+
+    # 4. 初始化历史存储（Web Dashboard持久化）
+        storage = None
+        if args.web:
+            from grid_volatility_scanner.storage import ScannerHistoryStorage
+            storage = ScannerHistoryStorage(args.web_db)
+            await storage.initialize()
+            scanner.set_history_storage(storage)
+            print(f"✅ Web Dashboard持久化已启用: {args.web_db}")
 
         # 🔥 重新确保scanner和BTC文件handler以及UI日志handler正确配置
         
@@ -314,6 +336,11 @@ async def main():
         import traceback
         logger.error(traceback.format_exc())
         sys.exit(1)
+    finally:
+        # 清理资源
+        if storage:
+            await storage.close()
+            print("✅ 数据库连接已关闭")
 
 
 if __name__ == "__main__":

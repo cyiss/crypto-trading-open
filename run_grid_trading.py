@@ -49,6 +49,7 @@ from core.services.grid.reserve import (
     ReserveMonitor,
     check_spot_reserve_on_startup
 )
+from core.services.grid.parameter import DynamicParameterEngine
 from core.logging import get_system_logger
 import sys
 import asyncio
@@ -414,7 +415,12 @@ async def create_exchange_adapter(config_data: dict):
     return adapter
 
 
-async def main(config_path: str = "config/grid/default_grid.yaml", debug: bool = False):
+async def main(
+    config_path: str = "config/grid/default_grid.yaml",
+    debug: bool = False,
+    dynamic: bool = False,
+    dynamic_update_interval: int = 600,
+):
     """
     主函数
 
@@ -578,6 +584,53 @@ async def main(config_path: str = "config/grid/default_grid.yaml", debug: bool =
             reserve_manager=reserve_manager  # 🔥 传入预留管理器
         )
         print("✅ 协调器创建成功")
+
+        # 🔥 动态参数引擎（Phase 2）
+        dynamic_engine = None
+        if dynamic:
+            print(f"\n🔧 步骤 4.5: 初始化动态参数引擎...")
+            print(f"   - 更新间隔: {dynamic_update_interval}秒")
+
+            # 读取YAML中的动态参数配置
+            dynamic_config = config_data.get('dynamic_parameters', {})
+            limits_config = config_data.get('dynamic_fallback', {})
+
+            dynamic_engine = DynamicParameterEngine(
+                exchange_adapter=exchange_adapter,
+                update_interval=dynamic_update_interval,
+                limits_config=limits_config if limits_config else None,
+            )
+
+            # 设置基准参数
+            dynamic_engine.set_base_params(grid_config.symbol, {
+                'grid_interval': grid_config.grid_interval,
+                'order_amount': grid_config.order_amount,
+                'follow_grid_count': grid_config.follow_grid_count or 100,
+                'scalping_trigger_percent': grid_config.scalping_trigger_percent,
+                'leverage': grid_config.leverage,
+                'price_decimals': grid_config.price_decimals,
+            })
+
+            # 启动后台参数更新任务
+            async def _dynamic_update_task():
+                """后台动态参数更新任务"""
+                nonlocal grid_config
+                while True:
+                    try:
+                        await asyncio.sleep(dynamic_update_interval)
+                        new_config = await dynamic_engine.update_grid_params(grid_config)
+                        # 如果参数有变化，通知协调器
+                        if new_config.grid_interval != grid_config.grid_interval:
+                            logger.info(f"🔄 动态参数已更新，网格间距: {grid_config.grid_interval} → {new_config.grid_interval}")
+                            grid_config = new_config
+                            # 通知协调器配置已更新
+                            if hasattr(coordinator, 'update_config'):
+                                coordinator.update_config(grid_config)
+                    except Exception as e:
+                        logger.warning(f"动态参数更新失败: {e}")
+
+            asyncio.create_task(_dynamic_update_task())
+            print("✅ 动态参数引擎已启动")
 
         # 🔥 启动前检查（仅现货且启用预留管理）
         if reserve_manager:
@@ -747,6 +800,19 @@ def parse_arguments():
         version='网格交易系统 v2.0.0'
     )
 
+    parser.add_argument(
+        '--dynamic',
+        action='store_true',
+        help='启用动态参数引擎（基于波动率自动调整网格参数）'
+    )
+
+    parser.add_argument(
+        '--dynamic-update-interval',
+        type=int,
+        default=600,
+        help='动态参数更新间隔（秒，默认600秒=10分钟）'
+    )
+
     return parser.parse_args()
 
 
@@ -778,7 +844,12 @@ if __name__ == "__main__":
             print()
 
         # 运行主程序
-        asyncio.run(main(config_path, debug=args.debug))
+        asyncio.run(main(
+            config_path,
+            debug=args.debug,
+            dynamic=args.dynamic,
+            dynamic_update_interval=args.dynamic_update_interval,
+        ))
 
     except KeyboardInterrupt:
         print("\n👋 程序已退出")

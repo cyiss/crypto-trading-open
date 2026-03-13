@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Grid Trading - 网格绩效{% endblock %}
+
+{% block content %}
+<div class="card mb-6">
+    <h2 class="text-lg font-semibold mb-4">📊 网格交易绩效</h2>
+    <p class="text-gray-400">网格绩效数据将在Phase 2-4（动态参数引擎+ML优化）完成后自动收集。</p>
+    <p class="text-gray-400 mt-2">当前展示功能：</p>
+    <ul class="list-disc list-inside text-gray-400 mt-1 space-y-1">
+        <li>扫描器历史数据分析</li>
+        <li>代币APR趋势对比</li>
+        <li>ML参数推荐（Phase 3启用）</li>
+    </ul>
+</div>
+
+<!-- Performance summary cards -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <div class="card">
+        <div class="text-gray-400 text-sm">累计扫描次数</div>
+        <div class="stat-value text-blue-400" id="stat-total-scans">--</div>
+    </div>
+    <div class="card">
+        <div class="text-gray-400 text-sm">追踪代币数</div>
+        <div class="stat-value text-purple-400" id="stat-unique-symbols">--</div>
+    </div>
+    <div class="card">
+        <div class="text-gray-400 text-sm">平均APR</div>
+        <div class="stat-value text-green-400" id="stat-avg-apr">--</div>
+    </div>
+</div>
+
+<!-- Symbol Comparison -->
+<div class="card">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-lg font-semibold">📈 代币APR趋势对比</h2>
+        <button onclick="addComparison()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm">
+            + 添加代币
+        </button>
+    </div>
+    <div id="comparison-selects" class="flex flex-wrap gap-2 mb-4"></div>
+    <div id="comparison-chart" style="height: 400px;"></div>
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    let comparisonSymbols = [];
+
+    async function loadStats() {
+        const data = await apiGet('/api/scanner/statistics');
+        if (!data) return;
+        document.getElementById('stat-total-scans').textContent = data.total_snapshots || 0;
+        document.getElementById('stat-unique-symbols').textContent = data.unique_symbols || 0;
+        document.getElementById('stat-avg-apr').textContent = formatApr(data.avg_apr);
+    }
+
+    function addComparison() {
+        const select = document.createElement('select');
+        select.className = 'bg-gray-700 px-3 py-2 rounded text-sm';
+        select.innerHTML = '<option value="">选择代币</option>';
+
+        // Load symbol list
+        apiGet('/api/scanner/symbols?hours=168').then(data => {
+            if (data && data.symbols) {
+                select.innerHTML += data.symbols.map(s =>
+                    `<option value="${escapeAttr(s)}">${escapeHtml(s)}</option>`
+                ).join('');
+            }
+        });
+
+        select.addEventListener('change', () => {
+            if (select.value && !comparisonSymbols.includes(select.value)) {
+                comparisonSymbols.push(select.value);
+                renderComparison();
+            }
+        });
+
+        document.getElementById('comparison-selects').appendChild(select);
+    }
+
+    async function renderComparison() {
+        if (comparisonSymbols.length === 0) return;
+        if (!ensurePlotlyAvailable('comparison-chart')) return;
+
+        const traces = [];
+        for (const symbol of comparisonSymbols) {
+            const data = await apiGet(`/api/scanner/snapshots/${symbol}?hours=24`);
+            if (data && data.timestamps.length > 0) {
+                traces.push({
+                    x: data.timestamps,
+                    y: data.apr_values,
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: symbol,
+                });
+            }
+        }
+
+        const layout = {
+            paper_bgcolor: '#1f2937',
+            plot_bgcolor: '#1f2937',
+            font: { color: '#e5e7eb' },
+            xaxis: { gridcolor: '#374151', title: '时间' },
+            yaxis: { gridcolor: '#374151', title: 'APR %' },
+            margin: { t: 20, r: 20, b: 40, l: 60 },
+            showlegend: true,
+            legend: { x: 0, y: 1.12, orientation: 'h' },
+        };
+
+        Plotly.newPlot('comparison-chart', traces, layout, { responsive: true });
+    }
+
+    async function refreshData() {
+        await loadStats();
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        loadStats();
+    });
+</script>
+{% endblock %}

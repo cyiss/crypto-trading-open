@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+{% block title %}Grid Trading - 扫描器历史{% endblock %}
+
+{% block content %}
+<!-- Filters -->
+<div class="card mb-6">
+    <div class="flex flex-wrap gap-4 items-center">
+        <div>
+            <label class="text-sm text-gray-400 block mb-1">交易所</label>
+            <select id="exchange-filter" class="bg-gray-700 px-3 py-2 rounded w-40">
+                <option value="">全部</option>
+                <option value="lighter">Lighter</option>
+                <option value="hyperliquid">Hyperliquid</option>
+                <option value="backpack">Backpack</option>
+            </select>
+        </div>
+        <div>
+            <label class="text-sm text-gray-400 block mb-1">评级</label>
+            <select id="rating-filter" class="bg-gray-700 px-3 py-2 rounded w-40">
+                <option value="all">全部</option>
+                <option value="S">S级</option>
+                <option value="A">A级</option>
+                <option value="B">B级</option>
+                <option value="C">C级</option>
+                <option value="D">D级</option>
+            </select>
+        </div>
+        <div>
+            <label class="text-sm text-gray-400 block mb-1">时间范围</label>
+            <select id="hours-filter" class="bg-gray-700 px-3 py-2 rounded w-40">
+                <option value="1">最近1小时</option>
+                <option value="6">最近6小时</option>
+                <option value="24" selected>最近24小时</option>
+                <option value="72">最近3天</option>
+                <option value="168">最近7天</option>
+            </select>
+        </div>
+        <div>
+            <label class="text-sm text-gray-400 block mb-1">代币</label>
+            <select id="symbol-filter" class="bg-gray-700 px-3 py-2 rounded w-40">
+                <option value="">全部</option>
+            </select>
+        </div>
+        <div class="pt-5">
+            <button onclick="loadHistory()" class="bg-blue-600 hover:bg-blue-500 px-6 py-2 rounded font-semibold">
+                查询
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- History Table -->
+<div class="card">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-lg font-semibold">📋 扫描历史记录</h2>
+        <span id="total-count" class="text-sm text-gray-400"></span>
+    </div>
+
+    <div class="overflow-x-auto">
+        <table>
+            <thead>
+                <tr>
+                    <th>扫描时间</th>
+                    <th>代币</th>
+                    <th>交易所</th>
+                    <th>价格</th>
+                    <th>APR</th>
+                    <th>评级</th>
+                    <th>循环</th>
+                    <th>24h量</th>
+                    <th>24h涨跌</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody id="history-body">
+                <tr><td colspan="10" class="text-center text-gray-500">选择条件后点击查询</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    <div class="flex justify-between items-center mt-4">
+        <button id="prev-btn" onclick="changePage(-1)" class="bg-gray-700 px-4 py-2 rounded hover:bg-gray-600 disabled:opacity-50" disabled>
+            ← 上一页
+        </button>
+        <span id="page-info" class="text-sm text-gray-400"></span>
+        <button id="next-btn" onclick="changePage(1)" class="bg-gray-700 px-4 py-2 rounded hover:bg-gray-600 disabled:opacity-50" disabled>
+            下一页 →
+        </button>
+    </div>
+</div>
+
+<!-- APR Trend Chart -->
+<div class="card mt-6" id="chart-section" style="display:none;">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-lg font-semibold" id="chart-title">📈 APR趋势</h2>
+    </div>
+    <div id="trend-chart" style="height: 400px;"></div>
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    let currentPage = 1;
+    let totalPages = 1;
+    let currentSymbol = '';
+
+    async function loadSymbols() {
+        const hours = document.getElementById('hours-filter').value;
+        const data = await apiGet(`/api/scanner/symbols?hours=${hours}`);
+        if (data && data.symbols) {
+            const select = document.getElementById('symbol-filter');
+            const currentVal = select.value;
+            select.innerHTML = '<option value="">全部</option>' +
+                data.symbols.map(s => `<option value="${escapeAttr(s)}">${escapeHtml(s)}</option>`).join('');
+            select.value = currentVal;
+        }
+    }
+
+    async function loadHistory() {
+        showLoading();
+        currentPage = 1;
+        await fetchHistory();
+        await loadSymbols();
+        hideLoading();
+    }
+
+    async function fetchHistory() {
+        const exchange = document.getElementById('exchange-filter').value;
+        const rating = document.getElementById('rating-filter').value;
+        const hours = document.getElementById('hours-filter').value;
+        const symbol = document.getElementById('symbol-filter').value;
+
+        const params = new URLSearchParams({
+            page: currentPage,
+            page_size: 30,
+            hours: hours,
+        });
+        if (exchange) params.set('exchange', exchange);
+        if (symbol) params.set('symbol', symbol);
+        if (rating && rating !== 'all') params.set('rating', rating);
+
+        const data = await apiGet(`/api/scanner/history?${params}`);
+        if (!data) return;
+
+        const rows = data.data || [];
+
+        document.getElementById('total-count').textContent = `共 ${data.total} 条`;
+
+        const tbody = document.getElementById('history-body');
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="10" class="text-center text-gray-500">无数据</td></tr>';
+        } else {
+            tbody.innerHTML = rows.map(r => `
+                <tr class="hover:bg-gray-700">
+                    <td class="text-sm">${(r.scan_time || '').replace('T', ' ').substring(0, 19)}</td>
+                    <td class="font-semibold">${escapeHtml(r.symbol || '--')}</td>
+                    <td>${escapeHtml(r.exchange || '--')}</td>
+                    <td>$${parseFloat(r.current_price || 0).toLocaleString()}</td>
+                    <td class="text-green-400 font-semibold">${formatApr(r.estimated_apr)}</td>
+                    <td>${getRatingBadge(r.rating)}</td>
+                    <td>${r.complete_cycles || 0}</td>
+                    <td>${formatVolume(r.volume_24h_usdc)}</td>
+                    <td class="${parseFloat(r.price_change_24h_percent) >= 0 ? 'text-green-400' : 'text-red-400'}">
+                        ${parseFloat(r.price_change_24h_percent || 0).toFixed(2)}%
+                    </td>
+                    <td>
+                        <button class="trend-history-btn text-blue-400 hover:text-blue-300 text-sm" data-symbol="${escapeAttr(r.symbol || '')}">
+                            📈 趋势
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+
+            document.querySelectorAll('.trend-history-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const symbolVal = btn.dataset.symbol || '';
+                    if (symbolVal) {
+                        showTrend(symbolVal);
+                    }
+                });
+            });
+        }
+
+        // Pagination
+        totalPages = Math.ceil(data.total / data.page_size) || 1;
+        document.getElementById('page-info').textContent = `第 ${currentPage} / ${totalPages} 页`;
+        document.getElementById('prev-btn').disabled = currentPage <= 1;
+        document.getElementById('next-btn').disabled = currentPage >= totalPages;
+    }
+
+    function changePage(delta) {
+        currentPage = Math.max(1, Math.min(totalPages, currentPage + delta));
+        fetchHistory();
+    }
+
+    async function showTrend(symbol) {
+        currentSymbol = symbol;
+        document.getElementById('chart-section').style.display = 'block';
+        document.getElementById('chart-title').textContent = `📈 ${symbol} APR趋势`;
+        document.getElementById('chart-section').scrollIntoView({ behavior: 'smooth' });
+
+        const hours = document.getElementById('hours-filter').value;
+        const data = await apiGet(`/api/scanner/snapshots/${symbol}?hours=${hours}`);
+        if (!data || data.timestamps.length === 0) return;
+        if (!ensurePlotlyAvailable('trend-chart')) return;
+
+        const trace = {
+            x: data.timestamps,
+            y: data.apr_values,
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: 'APR %',
+            line: { color: '#10b981', width: 2 },
+            fill: 'tozeroy',
+            fillcolor: 'rgba(16,185,129,0.1)',
+        };
+
+        const layout = {
+            paper_bgcolor: '#1f2937',
+            plot_bgcolor: '#1f2937',
+            font: { color: '#e5e7eb' },
+            xaxis: { gridcolor: '#374151', title: '时间' },
+            yaxis: { gridcolor: '#374151', title: 'APR %' },
+            margin: { t: 20, r: 20, b: 40, l: 60 },
+        };
+
+        Plotly.newPlot('trend-chart', [trace], layout, { responsive: true });
+    }
+
+    // Auto-refresh function
+    async function refreshData() {
+        if (currentPage === 1) {
+            await fetchHistory();
+        }
+    }
+</script>
+{% endblock %}

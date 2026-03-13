@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block title %}Grid Trading - Dashboard{% endblock %}
+
+{% block content %}
+<!-- Stats Cards -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+    <div class="card">
+        <div class="text-gray-400 text-sm">S级代币</div>
+        <div class="stat-value text-red-400" id="stat-s-count">--</div>
+    </div>
+    <div class="card">
+        <div class="text-gray-400 text-sm">A级代币</div>
+        <div class="stat-value text-yellow-400" id="stat-a-count">--</div>
+    </div>
+    <div class="card">
+        <div class="text-gray-400 text-sm">扫描代币总数</div>
+        <div class="stat-value text-blue-400" id="stat-total">--</div>
+    </div>
+    <div class="card">
+        <div class="text-gray-400 text-sm">最高APR</div>
+        <div class="stat-value text-green-400" id="stat-top-apr">--</div>
+    </div>
+</div>
+
+<!-- Latest Scan Results -->
+<div class="card mb-6">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-lg font-semibold">🎯 最新扫描排名</h2>
+        <div class="space-x-2">
+            <select id="exchange-filter" class="bg-gray-700 text-sm px-3 py-1 rounded" onchange="refreshData()">
+                <option value="">全部交易所</option>
+                <option value="lighter">Lighter</option>
+                <option value="hyperliquid">Hyperliquid</option>
+                <option value="backpack">Backpack</option>
+            </select>
+            <select id="rating-filter" class="bg-gray-700 text-sm px-3 py-1 rounded" onchange="refreshData()">
+                <option value="all">全部评级</option>
+                <option value="S">S级</option>
+                <option value="A">A级</option>
+                <option value="B">B级</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="overflow-x-auto">
+        <table id="scanner-table">
+            <thead>
+                <tr>
+                    <th>评级</th>
+                    <th>代币</th>
+                    <th>交易所</th>
+                    <th>价格</th>
+                    <th>APR</th>
+                    <th>循环/时</th>
+                    <th>完整循环</th>
+                    <th>24h量</th>
+                    <th>S级时长</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody id="scanner-results">
+                <tr><td colspan="10" class="text-center text-gray-500">加载中...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- APR Trend Chart -->
+<div class="card" id="chart-section" style="display:none;">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-lg font-semibold" id="chart-title">📈 APR趋势</h2>
+        <div class="space-x-2">
+            <button onclick="loadChart(currentChartSymbol, 1)" class="text-sm bg-gray-700 px-3 py-1 rounded hover:bg-gray-600">1h</button>
+            <button onclick="loadChart(currentChartSymbol, 6)" class="text-sm bg-gray-700 px-3 py-1 rounded hover:bg-gray-600">6h</button>
+            <button onclick="loadChart(currentChartSymbol, 24)" class="text-sm bg-blue-600 px-3 py-1 rounded hover:bg-blue-500">24h</button>
+            <button onclick="loadChart(currentChartSymbol, 168)" class="text-sm bg-gray-700 px-3 py-1 rounded hover:bg-gray-600">7d</button>
+        </div>
+    </div>
+    <div id="apr-chart" style="height: 400px;"></div>
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    let currentChartSymbol = null;
+
+    async function refreshData() {
+        showLoading();
+        const exchange = document.getElementById('exchange-filter').value;
+        const rating = document.getElementById('rating-filter').value;
+
+        const data = await apiGet(`/api/scanner/current?exchange=${exchange}`);
+        if (data) {
+            updateStats(data);
+            updateTable(data.results, rating);
+        }
+        hideLoading();
+    }
+
+    function updateStats(data) {
+        const counts = data.rating_counts || {};
+        document.getElementById('stat-s-count').textContent = (counts['🔥 S'] || 0) + (counts['S'] || 0);
+        document.getElementById('stat-a-count').textContent = (counts['⭐ A'] || 0) + (counts['A'] || 0);
+        document.getElementById('stat-total').textContent = data.total_symbols || 0;
+
+        const results = data.results || [];
+        const topApr = results.length > 0 ? Math.max(...results.map(r => parseFloat(r.estimated_apr || 0))) : 0;
+        document.getElementById('stat-top-apr').textContent = formatApr(topApr);
+    }
+
+    function updateTable(results, ratingFilter) {
+        const tbody = document.getElementById('scanner-results');
+        if (!results || results.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="10" class="text-center text-gray-500">暂无数据，请先运行扫描器</td></tr>';
+            return;
+        }
+
+        let filtered = results;
+        if (ratingFilter && ratingFilter !== 'all') {
+            filtered = results.filter(r => (r.rating || '').includes(ratingFilter));
+        }
+
+        tbody.innerHTML = filtered.map(r => `
+            <tr class="hover:bg-gray-700">
+                <td>${getRatingBadge(r.rating)}</td>
+                <td class="font-semibold">${escapeHtml(r.symbol || '--')}</td>
+                <td>${escapeHtml(r.exchange || '--')}</td>
+                <td>$${parseFloat(r.current_price || 0).toLocaleString()}</td>
+                <td class="font-semibold text-green-400">${formatApr(r.estimated_apr)}</td>
+                <td>${parseFloat(r.cycles_per_hour || 0).toFixed(1)}</td>
+                <td>${r.complete_cycles || 0}</td>
+                <td>${formatVolume(r.volume_24h)}</td>
+                <td>${escapeHtml(r.s_rating_duration_str || '--')}</td>
+                <td>
+                    <button class="trend-btn text-sm text-blue-400 hover:text-blue-300" data-symbol="${escapeAttr(r.symbol || '')}">
+                        📈 趋势
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+
+        document.querySelectorAll('.trend-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const symbol = btn.dataset.symbol || '';
+                if (symbol) {
+                    showChart(symbol);
+                }
+            });
+        });
+    }
+
+    async function showChart(symbol) {
+        currentChartSymbol = symbol;
+        document.getElementById('chart-section').style.display = 'block';
+        document.getElementById('chart-title').textContent = `📈 ${symbol} APR趋势`;
+        document.getElementById('chart-section').scrollIntoView({ behavior: 'smooth' });
+        await loadChart(symbol, 24);
+    }
+
+    async function loadChart(symbol, hours) {
+        const data = await apiGet(`/api/scanner/snapshots/${symbol}?hours=${hours}`);
+        if (!data || data.timestamps.length === 0) return;
+        if (!ensurePlotlyAvailable('apr-chart')) return;
+
+        const trace1 = {
+            x: data.timestamps,
+            y: data.apr_values,
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: 'APR %',
+            line: { color: '#10b981', width: 2 },
+            marker: { size: 4 },
+            yaxis: 'y',
+        };
+
+        const trace2 = {
+            x: data.timestamps,
+            y: data.prices || [],
+            type: 'scatter',
+            mode: 'lines',
+            name: '价格',
+            line: { color: '#f59e0b', width: 1 },
+            yaxis: 'y2',
+        };
+
+        const layout = {
+            paper_bgcolor: '#1f2937',
+            plot_bgcolor: '#1f2937',
+            font: { color: '#e5e7eb' },
+            xaxis: { gridcolor: '#374151', title: '时间' },
+            yaxis: { gridcolor: '#374151', title: 'APR %', side: 'left' },
+            yaxis2: { title: '价格', overlaying: 'y', side: 'right', gridcolor: '#374151' },
+            margin: { t: 20, r: 60, b: 40, l: 60 },
+            showlegend: true,
+            legend: { x: 0, y: 1.12, orientation: 'h' },
+        };
+
+        Plotly.newPlot('apr-chart', [trace1, trace2], layout, { responsive: true });
+    }
+</script>
+{% endblock %}
