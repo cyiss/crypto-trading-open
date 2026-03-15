@@ -12,7 +12,7 @@ grid_system:
   follow_grid_count: 1000          # 网格数量（350格×$0.003=$1.05，避免下限为负）
   follow_timeout: 1000000000000    # 脱离超时（秒）
   follow_distance: 2               # 脱离距离（格）
-  price_offset_grids: 10          # 价格偏移（格，让当前价格处于网格内部）
+  price_offset_grids: 0          # 价格偏移（格，让当前价格处于网格内部）
   
   # ============================================================================
   # 固定范围网格参数（grid_type = "long" | "martingale_long"）

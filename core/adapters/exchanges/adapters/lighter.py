@@ -558,6 +558,38 @@ class LighterAdapter(ExchangeAdapter):
         self.logger.warning(f"Lighter适配器暂不支持K线数据查询")
         return []
 
+    async def get_klines(
+        self,
+        symbol: str,
+        interval: str = "1h",
+        since: Optional[datetime] = None,
+        limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        获取K线数据（VolatilityCalculator兼容接口）
+
+        Args:
+            symbol: 交易对符号
+            interval: K线周期（如 "1m", "5m", "1h", "1d"）
+            since: 起始时间
+            limit: 返回数量限制
+
+        Returns:
+            K线数据列表，每项为 dict {time, open, high, low, close, volume}
+
+        Note:
+            Lighter的candlestick API只提供volume和timestamp，不提供OHLC价格数据。
+            因此无法返回有效的K线数据用于波动率计算。
+        """
+        normalized_symbol = self._normalize_symbol(symbol)
+        try:
+            return await self._rest.get_klines(
+                normalized_symbol, interval, since, limit
+            )
+        except NotImplementedError as e:
+            self.logger.warning(f"[{symbol}] {e}")
+            return []
+
     # ============= 账户信息 =============
 
     async def get_balances(self) -> List[BalanceData]:
@@ -814,6 +846,9 @@ class LighterAdapter(ExchangeAdapter):
             )
         
         return result
+
+    def get_last_order_failure_details(self) -> Optional[str]:
+        return self._rest.get_last_order_failure_details()
 
     async def place_order(
         self,

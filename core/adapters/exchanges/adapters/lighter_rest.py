@@ -88,6 +88,8 @@ except ImportError:
 class LighterRest(LighterBase):
     """Lighter REST API封装类"""
 
+    BASE_AMOUNT_MULTIPLIER = Decimal("1000000")
+
     def __init__(self, config: Dict[str, Any]):
         """
         初始化Lighter REST客户端
@@ -137,6 +139,7 @@ class LighterRest(LighterBase):
         # 🔥 令牌缓存（避免频繁生成令牌）
         self._auth_token_cache = None
         self._auth_token_expiry = 0  # 令牌过期时间戳
+        self._last_order_failure_details: Optional[str] = None
 
         # 错误避让控制器（与WebSocket共享）
         self._backoff_controller = None
@@ -157,6 +160,56 @@ class LighterRest(LighterBase):
             return False
         lowered = message.lower()
         return "invalid reduce only mode" in lowered or "code=21740" in lowered
+
+    def _convert_quantity_to_base_amount(
+        self,
+        quantity: Decimal,
+        price_decimals: int = 6
+    ) -> int:
+        """
+        将数量转换为 Lighter API 需要的整数格式
+
+        🔥 修复：quantity_multiplier 是动态的，基于 price_decimals 计算
+        公式：quantity_multiplier = 10^(6 - price_decimals)
+
+        示例：
+        - BTC (price_decimals=1): quantity_multiplier = 10^5 = 100,000
+        - ETH (price_decimals=2): quantity_multiplier = 10^4 = 10,000
+        - SOL (price_decimals=3): quantity_multiplier = 10^3 = 1,000
+        - TRUMP (price_decimals=4): quantity_multiplier = 10^2 = 100
+        - DOGE (price_decimals=6): quantity_multiplier = 10^0 = 1
+
+        参考：lighter_hft/shared/exchanges/lighter_infrastructure.py MarketInfo 类
+        """
+        try:
+            normalized_quantity = Decimal(str(quantity))
+        except Exception:
+            normalized_quantity = Decimal("0")
+
+        # 🔥 动态计算 quantity_multiplier
+        # 参考: lighter_hft/shared/exchanges/lighter_infrastructure.py
+        quantity_multiplier_exponent = max(0, 6 - price_decimals)
+        quantity_multiplier = Decimal(10 ** quantity_multiplier_exponent)
+
+        base_amount = normalized_quantity * quantity_multiplier
+        if base_amount < 1:
+            base_amount = Decimal("1")
+
+        try:
+            base_amount_int = int(base_amount.to_integral_value(rounding=ROUND_DOWN))
+        except Exception:
+            base_amount_int = int(base_amount)
+
+        if base_amount_int <= 0:
+            logger.warning(
+                "⚠️ [Lighter] 下单数量过小，已提升至最小单位: 原始=%s, 乘数=%s, price_decimals=%s",
+                quantity,
+                quantity_multiplier,
+                price_decimals,
+            )
+            return 1
+
+        return base_amount_int
     
     def _register_backoff_error(self, error_code: str, error_message: str = ""):
         """
@@ -272,8 +325,11 @@ class LighterRest(LighterBase):
 
             # 🔥 从环境变量或配置文件加载认证信息（优先使用环境变量）
             # 优先使用环境变量，如果没有则使用配置文件的值
-            api_key_private_key = os.getenv(
-                'LIGHTER_API_KEY_PRIVATE_KEY') or self.api_key_private_key
+            api_key_private_key = (
+                os.getenv('LIGHTER_API_KEY_PRIVATE_KEY')
+                or os.getenv('LIGHTER_PRIVATE_KEY')
+                or self.api_key_private_key
+            )
 
             # account_index: 优先环境变量，其次配置文件，最后默认None
             env_account_index = os.getenv('LIGHTER_ACCOUNT_INDEX')
@@ -285,7 +341,7 @@ class LighterRest(LighterBase):
                 account_index = None
 
             # api_key_index: 优先环境变量，其次配置文件，最后默认None
-            env_api_key_index = os.getenv('LIGHTER_API_KEY_INDEX')
+            env_api_key_index = os.getenv('LIGHTER_API_KEY_INDEX') or os.getenv('LIGHTER_API_INDEX')
             if env_api_key_index is not None:
                 api_key_index = int(env_api_key_index)
             elif self.api_key_index is not None:
@@ -297,12 +353,14 @@ class LighterRest(LighterBase):
             # auth_enabled只控制WebSocket是否订阅账户数据，不影响REST API的余额查询能力
             if account_index is not None and api_key_private_key:
                 # 显示认证信息来源
-                key_source = "环境变量" if os.getenv(
-                    'LIGHTER_API_KEY_PRIVATE_KEY') else "配置文件"
+                key_source = "环境变量" if (
+                    os.getenv('LIGHTER_API_KEY_PRIVATE_KEY') or os.getenv('LIGHTER_PRIVATE_KEY')
+                ) else "配置文件"
                 account_source = "环境变量" if os.getenv(
                     'LIGHTER_ACCOUNT_INDEX') else "配置文件"
-                api_key_index_source = "环境变量" if os.getenv(
-                    'LIGHTER_API_KEY_INDEX') else "配置文件"
+                api_key_index_source = "环境变量" if (
+                    os.getenv('LIGHTER_API_KEY_INDEX') or os.getenv('LIGHTER_API_INDEX')
+                ) else "配置文件"
 
                 logger.info(
                     f"✅ Lighter 认证信息加载成功:\n"
@@ -1127,14 +1185,16 @@ class LighterRest(LighterBase):
         # 1) 详细字段（order_book_details）
         if hasattr(market_details, 'order_book_details') and market_details.order_book_details:
             detail = market_details.order_book_details[0]
-            for attr in ("price_decimals", "priceDecimals", "price_scale", "price_scale_decimals"):
+            # 🔥 修复：添加 supported_price_decimals 字段
+            for attr in ("supported_price_decimals", "price_decimals", "priceDecimals", "price_scale", "price_scale_decimals"):
                 if hasattr(detail, attr):
                     parsed = _safe_int(getattr(detail, attr))
                     if parsed is not None:
                         return parsed
 
-        # 2) 摘要字段（order_books / 其他对象）
-        for attr in ("price_decimals", "priceDecimals", "price_scale", "price_scale_decimals"):
+        # 2) 摘要字段（order_books / 其它对象）
+        # 🔥 修复：添加 supported_price_decimals 字段（这是API实际返回的字段名）
+        for attr in ("supported_price_decimals", "price_decimals", "priceDecimals", "price_scale", "price_scale_decimals"):
             if hasattr(market_details, attr):
                 parsed = _safe_int(getattr(market_details, attr))
                 if parsed is not None:
@@ -1362,21 +1422,8 @@ class LighterRest(LighterBase):
         avg_execution_price_rounded = avg_execution_price.quantize(
             quantize_precision)
 
-        quantity_multiplier_exponent = max(0, 6 - price_decimals)
-        quantity_multiplier = Decimal(10) ** quantity_multiplier_exponent
-        base_amount = quantity * quantity_multiplier
-        if base_amount < 1:
-            base_amount = Decimal("1")
-        try:
-            base_amount_int = int(
-                base_amount.to_integral_value(rounding=ROUND_DOWN))
-        except Exception:
-            base_amount_int = int(base_amount)
-        if base_amount_int <= 0:
-            logger.warning(
-                f"⚠️ [Lighter] 下单数量过小，已提升至最小单位: 原始={quantity}, 乘数={quantity_multiplier}"
-            )
-            base_amount_int = 1
+        base_amount_int = self._convert_quantity_to_base_amount(
+            quantity, price_decimals=market_info['price_decimals'])
         avg_price_int = int(avg_execution_price_rounded *
                             market_info['price_multiplier'])
         is_ask = (side.lower() == "sell")
@@ -1440,21 +1487,8 @@ class LighterRest(LighterBase):
 
         price_rounded = price.quantize(quantize_precision)
 
-        quantity_multiplier_exponent = max(0, 6 - price_decimals)
-        quantity_multiplier = Decimal(10) ** quantity_multiplier_exponent
-        base_amount = quantity * quantity_multiplier
-        if base_amount < 1:
-            base_amount = Decimal("1")
-        try:
-            base_amount_int = int(
-                base_amount.to_integral_value(rounding=ROUND_DOWN))
-        except Exception:
-            base_amount_int = int(base_amount)
-        if base_amount_int <= 0:
-            logger.warning(
-                f"⚠️ [Lighter] 下单数量过小，已提升至最小单位: 原始={quantity}, 乘数={quantity_multiplier}"
-            )
-            base_amount_int = 1
+        base_amount_int = self._convert_quantity_to_base_amount(
+            quantity, price_decimals=market_info['price_decimals'])
         price_int = int(price_rounded * market_info['price_multiplier'])
         is_ask = (side.lower() == "sell")
 
@@ -1669,6 +1703,216 @@ class LighterRest(LighterBase):
         if tx_hash is not None:
             payload["tx_hash"] = tx_hash
         return payload
+
+    async def _build_signed_limit_order_tx(
+        self,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        price: Decimal,
+        *,
+        reduce_only: bool = False,
+        client_order_id: Optional[int] = None,
+        time_in_force: str = "GTT"
+    ) -> Optional[Dict[str, Any]]:
+        """
+        构建限价单的签名交易数据，不立即发送
+
+        🔥 使用WebSocket提交，解决高IMR市场(如TRUMP/DOGE/SOL)的21739错误
+        REST API对这些市场的保证金验证有bug，WebSocket则正常工作
+
+        Args:
+            symbol: 交易对
+            side: 方向 buy/sell
+            quantity: 数量
+            price: 限价
+            reduce_only: 是否只减仓
+            client_order_id: 客户端订单ID
+            time_in_force: 有效期类型 GTT/IOC/POST_ONLY
+
+        Returns:
+            签名后的payload字典，包含tx_type/tx_info/api_key_index等
+        """
+        if not self.signer_client:
+            logger.error("SignerClient 未初始化，无法签名订单")
+            return None
+
+        market_info = await self._get_market_info(symbol)
+        if not market_info:
+            logger.error(f"未找到市场信息: {symbol}")
+            return None
+
+        # 生成client_order_id
+        if client_order_id is None:
+            client_order_id = int(asyncio.get_event_loop().time() * 1000)
+
+        # 获取nonce
+        api_key_index, nonce = self.signer_client.get_api_key_nonce(-1, -1)
+
+        # 转换参数
+        params = self._convert_limit_order_params(
+            market_info, quantity, price, side,
+            client_order_id=client_order_id,
+            reduce_only=reduce_only,
+            time_in_force=time_in_force
+        )
+
+        import lighter
+        sign_result = self.signer_client.sign_create_order(
+            market_index=params['market_index'],
+            client_order_index=params['client_order_index'],
+            base_amount=params['base_amount'],
+            price=params['price'],
+            is_ask=params['is_ask'],
+            order_type=lighter.SignerClient.ORDER_TYPE_LIMIT,
+            time_in_force=params['time_in_force'],
+            reduce_only=int(params['reduce_only']),
+            trigger_price=params.get('trigger_price', lighter.SignerClient.NIL_TRIGGER_PRICE),
+            order_expiry=lighter.SignerClient.DEFAULT_28_DAY_ORDER_EXPIRY,
+            nonce=nonce,
+        )
+
+        if not isinstance(sign_result, tuple):
+            raise RuntimeError("sign_create_order 返回未知类型")
+
+        if len(sign_result) == 4:
+            tx_type, tx_info, tx_hash, err = sign_result
+        elif len(sign_result) == 3:
+            tx_type, tx_info, err = sign_result
+            tx_hash = None
+        elif len(sign_result) == 2:
+            tx_info, err = sign_result
+            tx_type = getattr(lighter.SignerClient, "TX_TYPE_CREATE_ORDER", 14)
+            tx_hash = None
+        else:
+            raise RuntimeError("sign_create_order 返回异常结果")
+
+        if err:
+            logger.error(f"签名限价单失败: {self.parse_error(err)}")
+            try:
+                self.signer_client.nonce_manager.acknowledge_failure(api_key_index)
+                logger.debug(f"✅ Nonce回滚成功: api_key_index={api_key_index}")
+            except Exception as ack_err:
+                logger.warning(f"⚠️ Nonce回滚失败: {ack_err}")
+            return None
+
+        payload = {
+            "tx_type": tx_type,
+            "tx_info": tx_info,
+            "api_key_index": api_key_index,
+            "context": {
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "price": price,
+                "reduce_only": reduce_only,
+                "client_order_id": client_order_id
+            }
+        }
+        if tx_hash is not None:
+            payload["tx_hash"] = tx_hash
+        return payload
+
+    async def place_limit_order_via_ws(
+        self,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        price: Decimal,
+        *,
+        reduce_only: bool = False,
+        time_in_force: str = "GTT",
+        **kwargs
+    ) -> Optional[OrderData]:
+        """
+        通过WebSocket下限价单
+
+        🔥 解决高IMR市场(如TRUMP/DOGE/SOL)的21739错误
+        REST API对这些市场的保证金验证有bug，WebSocket则正常工作
+
+        Args:
+            symbol: 交易对
+            side: 方向 buy/sell
+            quantity: 数量
+            price: 限价
+            reduce_only: 是否只减仓
+            time_in_force: 有效期类型
+
+        Returns:
+            OrderData对象，失败返回None
+        """
+        if not self._websocket:
+            logger.error("WebSocket 模块未初始化，无法通过WS下限价单")
+            return None
+
+        client_order_id = kwargs.get("client_order_id")
+
+        # 构建签名交易
+        signed = await self._build_signed_limit_order_tx(
+            symbol, side, quantity, price,
+            reduce_only=reduce_only,
+            client_order_id=client_order_id,
+            time_in_force=time_in_force
+        )
+        if not signed:
+            logger.error(f"❌ 构建限价单签名失败: {symbol} {side} {quantity}@{price}")
+            return None
+
+        # 通过WebSocket发送
+        try:
+            response = await self._websocket.send_tx_batch(
+                [signed["tx_type"]],
+                [signed["tx_info"]]
+            )
+
+            if isinstance(response, dict) and response.get("error"):
+                error_info = response.get("error", {})
+                error_msg = error_info.get("message", str(response)) if isinstance(error_info, dict) else str(response)
+                logger.error(f"❌ WS限价单返回错误: {error_msg}")
+                # 回滚nonce
+                try:
+                    self.signer_client.nonce_manager.acknowledge_failure(signed["api_key_index"])
+                except Exception:
+                    pass
+                return None
+
+            # 构建OrderData
+            tx_hashes = response.get("tx_hash") if isinstance(response, dict) else None
+            tx_hash = tx_hashes[0] if isinstance(tx_hashes, list) and tx_hashes else None
+
+            logger.info(
+                f"✅ WS限价单已发送: {symbol} {side} {quantity}@{price}, tx_hash={tx_hash}"
+            )
+
+            return OrderData(
+                id=None,  # 需要从WebSocket推送或REST查询获取
+                client_id=str(signed["context"]["client_order_id"]),
+                symbol=symbol,
+                side=OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL,
+                type=OrderType.LIMIT,
+                amount=quantity,
+                price=price,
+                filled=Decimal("0"),
+                remaining=quantity,
+                cost=Decimal("0"),
+                average=None,
+                status=OrderStatus.OPEN,
+                timestamp=datetime.now(),
+                updated=datetime.now(),
+                fee=None,
+                trades=[],
+                params={},
+                raw_data={"tx_hash": tx_hash, "ws_response": response}
+            )
+
+        except Exception as e:
+            logger.error(f"❌ WS限价单发送失败: {e}")
+            # 回滚nonce
+            try:
+                self.signer_client.nonce_manager.acknowledge_failure(signed["api_key_index"])
+            except Exception:
+                pass
+            return None
 
     async def place_market_orders_via_ws_batch(
         self,
@@ -1911,7 +2155,9 @@ class LighterRest(LighterBase):
             # 处理结果
             return await self._handle_order_result(
                 tx, tx_hash, err, symbol, side, "market",
-                quantity, avg_execution_price, **kwargs
+                quantity, avg_execution_price,
+                raw_submit_params=params,
+                **kwargs
             )
         except LighterReduceOnlyError:
             raise
@@ -1928,7 +2174,12 @@ class LighterRest(LighterBase):
         market_info: Dict,
         **kwargs
     ) -> Optional[OrderData]:
-        """执行限价单"""
+        """
+        执行限价单
+
+        🔥 修复：使用WebSocket提交，解决高IMR市场(如TRUMP/DOGE/SOL)的21739错误
+        REST API对这些市场的保证金验证有bug，WebSocket则正常工作
+        """
         if not price:
             logger.error("限价单必须指定价格")
             return None
@@ -1938,6 +2189,29 @@ class LighterRest(LighterBase):
             kwargs["client_order_id"] = int(
                 asyncio.get_event_loop().time() * 1000)
 
+        # 🔥 优先使用WebSocket提交（解决高IMR市场的21739错误）
+        if self._websocket:
+            try:
+                time_in_force = kwargs.get("time_in_force", "GTT")
+                reduce_only = kwargs.get("reduce_only", False)
+
+                order_data = await self.place_limit_order_via_ws(
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity,
+                    price=price,
+                    reduce_only=reduce_only,
+                    time_in_force=time_in_force,
+                    client_order_id=kwargs.get("client_order_id")
+                )
+                if order_data:
+                    return order_data
+                # WebSocket提交失败，fallback到REST API
+                logger.warning("⚠️ WebSocket限价单提交失败，fallback到REST API")
+            except Exception as ws_err:
+                logger.warning(f"⚠️ WebSocket限价单提交异常: {ws_err}，fallback到REST API")
+
+        # REST API fallback
         # 转换参数
         params = self._convert_limit_order_params(
             market_info, quantity, price, side, **kwargs
@@ -1959,7 +2233,9 @@ class LighterRest(LighterBase):
 
             return await self._handle_order_result(
                 tx, tx_hash, err, symbol, side, "limit",
-                quantity, price_rounded, **kwargs
+                quantity, price_rounded,
+                raw_submit_params=params,
+                **kwargs
             )
         except LighterReduceOnlyError:
             raise
@@ -1998,10 +2274,12 @@ class LighterRest(LighterBase):
         logger.debug(
             f"📋 _handle_order_result: side={side}, price={price}, qty={quantity}"
         )
+        self._last_order_failure_details = None
 
         # 检查错误
         if err:
             error_msg = self.parse_error(err) if err else "未知错误"
+            self._last_order_failure_details = f"error={error_msg}"
             logger.error(f"❌ Lighter下单失败: {error_msg}")
             logger.error(f"   订单类型: {order_type}, 方向: {side}, 数量: {quantity}")
             if order_type == "market":
@@ -2026,6 +2304,24 @@ class LighterRest(LighterBase):
         if not tx and not tx_hash:
             logger.error(f"❌ Lighter下单失败: tx和tx_hash都为空（无错误信息）")
             logger.error(f"   这可能是钱包未授权或gas不足")
+            submit_params = kwargs.get("raw_submit_params")
+            if submit_params:
+                self._last_order_failure_details = (
+                    f"empty_tx market_index={submit_params.get('market_index')} "
+                    f"client_order_index={submit_params.get('client_order_index')} "
+                    f"base_amount={submit_params.get('base_amount')} "
+                    f"price={submit_params.get('price') or submit_params.get('avg_execution_price')} "
+                    f"is_ask={submit_params.get('is_ask')} reduce_only={submit_params.get('reduce_only')}"
+                )
+                logger.error(
+                    "   提交参数: market_index=%s client_order_index=%s base_amount=%s price=%s is_ask=%s reduce_only=%s",
+                    submit_params.get("market_index"),
+                    submit_params.get("client_order_index"),
+                    submit_params.get("base_amount"),
+                    submit_params.get("price") or submit_params.get("avg_execution_price"),
+                    submit_params.get("is_ask"),
+                    submit_params.get("reduce_only"),
+                )
             return None
 
         # 🔥 提取transaction hash（这不是order_id！）
@@ -2080,6 +2376,9 @@ class LighterRest(LighterBase):
             params=kwargs,
             raw_data={'tx_hash_str': tx_hash_str}  # 🔥 只保存字符串,避免循环引用
         )
+
+    def get_last_order_failure_details(self) -> Optional[str]:
+        return self._last_order_failure_details
 
     # 🔥 已删除 _query_order_index 方法
     # 新逻辑：完全依赖 WebSocket 推送获取 order_index，不再主动查询
@@ -2643,3 +2942,37 @@ class LighterRest(LighterBase):
             'rejected': OrderStatus.REJECTED,
         }
         return status_mapping.get(status_str.lower(), OrderStatus.UNKNOWN)
+
+    # ============= K线数据方法 =============
+
+    async def get_klines(
+        self,
+        symbol: str,
+        interval: str = "1h",
+        since: Optional[datetime] = None,
+        limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        获取K线数据
+
+        Args:
+            symbol: 交易对符号
+            interval: K线周期（如 "1m", "5m", "1h", "1d"）
+            since: 起始时间
+            limit: 返回数量限制
+
+        Returns:
+            K线数据列表
+
+        Raises:
+            NotImplementedError: Lighter不支持OHLC K线数据
+
+        注意：
+            Lighter的candlestick API只提供成交量(volume)和时间戳(timestamp)，
+            不提供OHLC价格数据。因此无法用于波动率计算等需要价格数据的场景。
+        """
+        raise NotImplementedError(
+            "Lighter交易所不支持OHLC K线数据。"
+            "其candlestick API只提供volume和timestamp，不提供open/high/low/close价格。"
+            "如需计算波动率，请使用其他数据源。"
+        )

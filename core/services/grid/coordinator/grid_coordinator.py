@@ -303,6 +303,46 @@ class GridCoordinator:
             # 🔄 4.5. 启动持仓监控（使用新模块 PositionMonitor）
             await self.position_monitor.start_monitoring()
 
+            # 🔥 4.6. 过滤掉会立即成交的订单（价格在现价错误方向的订单）
+            # 做多网格：买单价格 >= 现价 会立即成交，应该过滤
+            # 做空网格：卖单价格 <= 现价 会立即成交，应该过滤
+            current_price_for_filter = await self.engine.get_current_price()
+            original_count = len(initial_orders)
+
+            if self.config.is_long():
+                # 做多网格：过滤掉价格 >= 现价的买单
+                filtered_orders = [
+                    order for order in initial_orders
+                    if order.price < current_price_for_filter
+                ]
+                removed_count = original_count - len(filtered_orders)
+                if removed_count > 0:
+                    self.logger.warning(
+                        f"⚠️ 过滤掉 {removed_count} 个会立即成交的买单 "
+                        f"(价格 >= 现价 ${current_price_for_filter:,.2f})"
+                    )
+            else:
+                # 做空网格：过滤掉价格 <= 现价的卖单
+                filtered_orders = [
+                    order for order in initial_orders
+                    if order.price > current_price_for_filter
+                ]
+                removed_count = original_count - len(filtered_orders)
+                if removed_count > 0:
+                    self.logger.warning(
+                        f"⚠️ 过滤掉 {removed_count} 个会立即成交的卖单 "
+                        f"(价格 <= 现价 ${current_price_for_filter:,.2f})"
+                    )
+
+            initial_orders = filtered_orders
+
+            if not initial_orders:
+                self.logger.error(
+                    f"❌ 过滤后没有有效订单！现价=${current_price_for_filter:,.2f}, "
+                    f"请检查 price_offset_grids 配置（做多应为0）"
+                )
+                raise ValueError("过滤后没有有效的网格订单")
+
             # 5. 批量下所有初始订单（关键修改）
             self.logger.info(f"开始批量挂单，共{len(initial_orders)}个订单...")
             placed_orders = await self.engine.place_batch_orders(initial_orders)
@@ -357,7 +397,15 @@ class GridCoordinator:
             self.state.initial_price = initial_price
             self.logger.info(f"📊 网格启动价格: ${initial_price:,.2f}")
 
-            self.logger.info("✅ 网格系统初始化完成，所有订单已就位，等待成交")
+            active_order_count = len(self.state.active_orders)
+            if active_order_count > 0:
+                self.logger.info(
+                    f"✅ 网格系统初始化完成，活跃订单={active_order_count}，等待成交"
+                )
+            else:
+                self.logger.warning(
+                    "⚠️ 网格系统初始化完成，但当前没有任何活跃挂单；请优先检查交易所 buying_power 或保证金状态"
+                )
 
         except Exception as e:
             self.logger.error(f"❌ 网格系统初始化失败: {e}")
@@ -1030,17 +1078,27 @@ class GridCoordinator:
         exchange_id = str(self.config.exchange).lower(
         ) if self.config.exchange else ''
         if exchange_id == 'lighter':
-            # ⚠️ 由于 Lighter SDK 的 C 库存在 Bug，无法正确设置 isolated 模式
-            # SDK 的 update_leverage 方法传入 margin_mode=1 时，生成的交易 JSON 中 MarginMode 仍为 0
-            # 因此暂时跳过保证金模式自动设置，使用账户默认模式或网页端手动设置的模式
-
             margin_mode = getattr(self.config, 'margin_mode', 'cross')
             leverage = getattr(self.config, 'leverage', 1)
 
-            self.logger.warning("⚠️ 已跳过保证金模式自动设置（SDK bug: isolated模式无法生效）")
-            self.logger.warning(
-                f"📝 当前配置: {self.config.symbol} → {margin_mode}模式, {leverage}x杠杆")
-            self.logger.warning("💡 建议: 请在 Lighter 网页端手动设置保证金模式和杠杆（一次性设置即可）")
+            # ⚠️ Lighter SDK 的 update_leverage 对 isolated 模式有 bug
+            # 传入 margin_mode=1 时，生成的交易 JSON 中 MarginMode 仍为 0
+            # 但 cross 模式 (margin_mode=0) 可以正常工作
+            if margin_mode.lower() == 'isolated':
+                self.logger.warning("⚠️ 已跳过 isolated 模式设置（SDK bug: isolated模式无法生效）")
+                self.logger.warning("💡 建议: 请在 Lighter 网页端手动设置 isolated 模式和杠杆")
+            else:
+                # cross 模式可以正常设置
+                self.logger.info(f"🔧 设置 {self.config.symbol}: {margin_mode}模式, {leverage}x杠杆...")
+                try:
+                    success = await self.engine.exchange.set_margin_mode(
+                        self.config.symbol, margin_mode, leverage)
+                    if success:
+                        self.logger.info(f"✅ 保证金模式设置成功: {self.config.symbol} → {margin_mode}, {leverage}x")
+                    else:
+                        self.logger.warning(f"⚠️ 保证金模式设置可能未生效，继续启动...")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ 保证金模式设置异常: {e}，继续启动...")
 
         await self.initialize()
         await self.engine.start()

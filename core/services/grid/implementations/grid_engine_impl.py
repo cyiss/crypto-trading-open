@@ -136,6 +136,25 @@ class GridEngineImpl(IGridEngine):
             await self.exchange.connect()
             self.logger.info(f"连接到交易所: {config.exchange}")
 
+        # 🔥 Lighter交易所：设置杠杆和保证金模式
+        # 这一步是关键！配置文件中的杠杆和保证金模式必须与交易所一致
+        # 否则下单时可能报 "not enough margin" 错误
+        exchange_id = str(config.exchange).lower() if config.exchange else ''
+        if exchange_id == 'lighter' and config.leverage and config.leverage > 1:
+            try:
+                self.logger.info(f"🔧 正在设置杠杆: {config.symbol} {config.leverage}x {config.margin_mode}模式...")
+                success = await self.exchange.set_margin_mode(
+                    symbol=config.symbol,
+                    margin_mode=config.margin_mode or "cross",
+                    leverage=config.leverage
+                )
+                if success:
+                    self.logger.info(f"✅ 杠杆设置成功: {config.symbol} {config.leverage}x")
+                else:
+                    self.logger.warning(f"⚠️ 杠杆设置失败，将使用交易所默认杠杆")
+            except Exception as e:
+                self.logger.warning(f"⚠️ 杠杆设置异常: {e}，将使用交易所默认杠杆")
+
         # 订阅用户数据流（接收订单更新）- 优先使用WebSocket
         self._ws_monitoring_enabled = False
         self._polling_task = None
@@ -242,6 +261,7 @@ class GridEngineImpl(IGridEngine):
             # 🔥 准备保证金模式参数（Lighter交易所必需）
             # margin_mode: "isolated"=逐仓(1), "cross"=全仓(0)
             margin_mode_value = 1 if self.config.margin_mode.lower() == "isolated" else 0
+            create_order_params = {"margin_mode": margin_mode_value}
 
             exchange_order = await self.exchange.create_order(
                 symbol=self.config.symbol,
@@ -250,7 +270,7 @@ class GridEngineImpl(IGridEngine):
                 amount=order.amount,
                 price=order.price,
                 # ✅ 传递保证金模式（Lighter必需）
-                params={"margin_mode": margin_mode_value},
+                params=create_order_params,
                 batch_mode=batch_mode  # 🔥 传递批量模式标志（仅Lighter使用）
             )
 
@@ -268,13 +288,17 @@ class GridEngineImpl(IGridEngine):
                     order_type=OrderType.LIMIT,
                     amount=order.amount,
                     price=order.price,
-                    params=None,
+                    params=create_order_params,
                     batch_mode=batch_mode
                 )
 
                 # 如果重试后仍然为None，则抛出异常
                 if exchange_order is None:
                     error_msg = f"下单失败: 交易所返回None（已重试1次） (Grid {order.grid_id}, {order.side.value} {order.amount}@{order.price})"
+                    failure_details_getter = getattr(self.exchange, "get_last_order_failure_details", None)
+                    failure_details = failure_details_getter() if callable(failure_details_getter) else None
+                    if failure_details:
+                        error_msg = f"{error_msg} | detail={failure_details}"
                     self.logger.error(error_msg)
                     raise Exception(error_msg)
                 else:
@@ -385,7 +409,13 @@ class GridEngineImpl(IGridEngine):
         Returns:
             更新后的订单列表
         """
+        orders = self._prioritize_batch_orders(orders)
+        orders = self._apply_startup_active_order_limit(orders)
+        orders = await self._cap_lighter_follow_orders_by_margin(orders, source="批量初始化")
         total_orders = len(orders)
+        if total_orders == 0:
+            self.logger.warning("⚠️ 批量下单已跳过：当前保证金预算不足，未提交任何启动订单")
+            return []
         self.logger.info(f"开始批量下单: {total_orders}个订单")
 
         # 分批下单，避免一次性并发过多（每批50个）
@@ -530,6 +560,197 @@ class GridEngineImpl(IGridEngine):
         await self._sync_order_status_after_batch()
 
         return successful_orders
+
+    def _prioritize_batch_orders(self, orders: List[GridOrder]) -> List[GridOrder]:
+        """为启动阶段的批量下单做轻量优先级排序。"""
+        if not orders:
+            return orders
+
+        exchange_id = str(self.config.exchange).lower() if self.config and self.config.exchange else ""
+        if exchange_id != "lighter":
+            return orders
+
+        if not self.config or not self.config.is_follow_mode():
+            return orders
+
+        current_price = self._current_price
+        if current_price is None:
+            return orders
+
+        prioritized_orders = sorted(
+            orders,
+            key=lambda order: (
+                abs(order.price - current_price),
+                0 if order.side == GridOrderSide.BUY else 1,
+                -order.price if order.side == GridOrderSide.BUY else order.price,
+            ),
+        )
+
+        preview_count = min(5, len(prioritized_orders))
+        preview_prices = ", ".join(str(prioritized_orders[index].price) for index in range(preview_count))
+        self.logger.info(
+            "🔀 Lighter价格移动网格按接近现价优先下单: current=%s, first_prices=[%s]",
+            current_price,
+            preview_prices,
+        )
+        return prioritized_orders
+
+    def _apply_startup_active_order_limit(self, orders: List[GridOrder]) -> List[GridOrder]:
+        """限制 follow grid 启动阶段实际提交的订单数量。"""
+        if not orders or not self.config or not self.config.is_follow_mode():
+            return orders
+
+        startup_limit = getattr(self.config, "startup_active_grid_count", None)
+        if not startup_limit or startup_limit <= 0:
+            return orders
+
+        if len(orders) != self.config.grid_count or startup_limit >= len(orders):
+            return orders
+
+        limited_orders = orders[:startup_limit]
+        self.logger.info(
+            "🎯 启动挂单裁剪: theoretical=%s, startup_active=%s",
+            len(orders),
+            len(limited_orders),
+        )
+        return limited_orders
+
+    async def _cap_lighter_follow_orders_by_margin(self, orders: List[GridOrder], source: str) -> List[GridOrder]:
+        """按当前账户可用保证金裁剪 Lighter 价格移动网格订单数。"""
+        if not orders:
+            return orders
+
+        exchange_id = str(self.config.exchange).lower() if self.config and self.config.exchange else ""
+        if exchange_id != "lighter":
+            return orders
+
+        if not self.config or not self.config.is_follow_mode():
+            return orders
+
+        leverage = Decimal(str(max(self.config.leverage, 1)))
+        if leverage <= 0:
+            return orders
+
+        balances = await self._wait_for_lighter_balance_snapshot(timeout_seconds=3.0)
+        if not balances:
+            self.logger.warning("⚠️ 无法获取 Lighter WebSocket 余额快照，跳过本次启动挂单，避免在未知 buying_power 下盲目提交")
+            return []
+
+        free_balance = max((Decimal(str(balance.free or 0)) for balance in balances), default=Decimal("0"))
+        buying_power = Decimal("0")
+        buying_power_seen = False
+        for balance in balances:
+            raw_data = getattr(balance, "raw_data", None) or {}
+            # 🔥 只有 WebSocket 来源的 raw_data 才有 buying_power 字段
+            # REST 来源的 raw_data['account'] 没有 purchase_power 字段（Lighter SDK 不返回）
+            if raw_data.get("source") == "ws" and "buying_power" in raw_data:
+                buying_power_seen = True
+                buying_power = max(buying_power, Decimal(str(raw_data.get("buying_power") or 0)))
+
+        # 🔥 如果 buying_power_seen 为 True 但 buying_power=0，说明保证金被完全占用
+        # 这种情况下禁止新开仓（但允许平仓）
+        if buying_power_seen and buying_power <= 0:
+            # 检查是否所有订单都是平仓单
+            all_close_orders = all(order.side == GridOrderSide.SELL for order in orders)
+            if not all_close_orders:
+                self.logger.info(
+                    "💸 Lighter保证金裁剪: source=%s, buying_power=%s，当前禁止任何新的开仓挂单",
+                    source,
+                    buying_power,
+                )
+                # 只保留平仓单
+                return [order for order in orders if order.side == GridOrderSide.SELL]
+
+        # 🔥 使用可用保证金：优先实时 buying_power；仅在 WS 尚未给出 buying_power 时才回退 free_balance
+        if buying_power_seen and buying_power > 0:
+            usable_margin = buying_power * Decimal("0.95")
+        elif free_balance > 0:
+            usable_margin = free_balance * Decimal("0.95")
+            self.logger.warning(
+                "⚠️ Lighter 尚未收到 buying_power，仅使用 free_balance=%s 估算启动保证金，结果可能偏乐观",
+                free_balance,
+            )
+        else:
+            self.logger.warning(
+                "⚠️ Lighter 余额快照未提供可用保证金，跳过 %s 订单提交",
+                source,
+            )
+            return []
+        current_price = self._current_price if self._current_price and self._current_price > 0 else None
+
+        first_order = orders[0]
+        first_reference_price = current_price or first_order.price
+        first_estimated_margin = (max(first_reference_price, first_order.price) * first_order.amount) / leverage
+        if first_estimated_margin > usable_margin:
+            self.logger.warning(
+                "⚠️ Lighter保证金不足以提交首笔启动单: source=%s, free=%s, buying_power=%s, usable=%s, first_order_margin=%s, first_order=%s %s@%s",
+                source,
+                free_balance,
+                buying_power,
+                usable_margin.quantize(Decimal("0.0001")),
+                first_estimated_margin.quantize(Decimal("0.0001")),
+                first_order.side.value,
+                first_order.amount,
+                first_order.price,
+            )
+            return []
+
+        allowed_orders: List[GridOrder] = []
+        consumed_margin = Decimal("0")
+        for order in orders:
+            reference_price = current_price or order.price
+            effective_price = max(reference_price, order.price)
+            estimated_margin = (effective_price * order.amount) / leverage
+            if estimated_margin <= 0:
+                continue
+
+            if consumed_margin + estimated_margin > usable_margin:
+                break
+
+            allowed_orders.append(order)
+            consumed_margin += estimated_margin
+
+        skipped_count = len(orders) - len(allowed_orders)
+        if skipped_count > 0:
+            self.logger.info(
+                "💸 Lighter保证金裁剪: source=%s, free=%s, buying_power=%s, usable=%s, allowed=%s, skipped=%s, estimated_margin=%s",
+                source,
+                free_balance,
+                buying_power,
+                usable_margin.quantize(Decimal("0.0001")),
+                len(allowed_orders),
+                skipped_count,
+                consumed_margin.quantize(Decimal("0.0001")),
+            )
+
+        return allowed_orders
+
+    async def _wait_for_lighter_balance_snapshot(self, timeout_seconds: float = 3.0):
+        """等待 Lighter WebSocket 余额快照就绪，避免启动瞬间拿不到 buying_power。"""
+        deadline = time.time() + max(timeout_seconds, 0)
+        last_balances = []
+        while True:
+            last_balances = await self._get_lighter_balance_snapshot()
+            if last_balances:
+                return last_balances
+            if time.time() >= deadline:
+                return last_balances
+            await asyncio.sleep(0.25)
+
+    async def _get_lighter_balance_snapshot(self):
+        """获取 Lighter 余额快照，优先 WS，必要时回退到 REST。"""
+        balances = await self.exchange.get_balances()
+        if balances:
+            return balances
+
+        rest_client = getattr(self.exchange, "_rest", None)
+        if rest_client and hasattr(rest_client, "get_account_balance"):
+            try:
+                return await rest_client.get_account_balance()
+            except Exception as exc:
+                self.logger.warning(f"⚠️ Lighter REST余额查询失败: {exc}")
+
+        return []
 
     def _remove_order_from_pending(self, order_id: str) -> int:
         """

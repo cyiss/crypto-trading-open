@@ -17,7 +17,7 @@ grid_system:
   follow_grid_count: 100          # 网格数量
   follow_timeout: 1000000000000    # 脱离超时
   follow_distance: 2               # 脱离距离
-  price_offset_grids: 10          # 价格偏移
+  price_offset_grids: 0            # 价格偏移（做多必须为0，避免买单挂在现价上方）
 
   # ============================================================================
   # 通用网格参数 - 基于10u单次仓位
@@ -27,7 +27,7 @@ grid_system:
   quantity_precision: 3           # 数量精度
   price_decimals: 2               # 价格精度
   margin_mode: "cross"            # 保证金模式
-  leverage: 20                    # 杠杆倍数
+  leverage: 10                    # 杠杆倍数
 
   # ============================================================================
   # 🔥 剥头皮模式

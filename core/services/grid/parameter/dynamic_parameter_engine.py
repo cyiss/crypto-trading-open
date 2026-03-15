@@ -1,22 +1,53 @@
 """
 动态参数引擎 - Dynamic Parameter Engine
 
-整合波动率计算和参数调整，作为网格交易系统运行时的参数自动调整组件。
+整合波动率计算、参数调整和方向决策，作为网格交易系统运行时的参数自动调整组件。
+
+🔥 新增功能（2026-03-16）：
+- 智能多空切换：根据市场趋势自动决定交易方向
+- 双向网格支持：震荡行情时同时运行做多和做空
 """
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional, Dict, Any, TYPE_CHECKING
+from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING
 
 from .volatility_calculator import VolatilityCalculator, MarketIndicators
 from .parameter_adjuster import ParameterAdjuster, AdjustedParameters, DynamicFallbackLimits
+
+# 🔥 新增：方向管理器
+try:
+    from ..direction import (
+        GridDirectionManager,
+        BidirectionalGridController,
+        TradeDirection,
+        DirectionDecision,
+    )
+    DIRECTION_MANAGER_AVAILABLE = True
+except ImportError:
+    DIRECTION_MANAGER_AVAILABLE = False
+    GridDirectionManager = None
+    BidirectionalGridController = None
+    TradeDirection = None
+    DirectionDecision = None
 
 if TYPE_CHECKING:
     from core.services.grid.models.grid_config import GridConfig
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DynamicUpdateResult:
+    """动态更新结果"""
+    config: 'GridConfig'
+    direction_decision: Optional['DirectionDecision'] = None
+    indicators: Optional[MarketIndicators] = None
+    adjusted_params: Optional[AdjustedParameters] = None
+    should_switch_direction: bool = False
 
 
 class DynamicParameterEngine:
